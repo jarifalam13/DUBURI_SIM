@@ -14,6 +14,7 @@ export const CHANNELS = [
   ['rll_P', ''], ['rll_I', ''], ['rll_D', ''], ['pit_P', ''], ['pit_I', ''], ['pit_D', ''], ['yaw_P', ''], ['yaw_I', ''], ['yaw_D', ''],
   ['saturated', ''], ['submerged', ''], ['gain', ''],
   ['thrust_total', 'N'],
+  ['press_abs', 'mbar'], ['press_int', 'mbar'], ['flood', 'mL'], ['floor_dist', 'm'],
 ];
 export const MAX_MOTORS = 12;
 for (let i = 0; i < MAX_MOTORS; i++) CHANNELS.push([`m${i + 1}_out`, ''], [`m${i + 1}_pwm`, 'us'], [`m${i + 1}_N`, 'N']);

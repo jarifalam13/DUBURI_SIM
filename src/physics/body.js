@@ -7,6 +7,11 @@
 // damping (from CFD or estimates), surface-aware buoyancy from volume
 // elements, thruster forces with in-flow/ventilation effects, current,
 // turbulence and waves, and penalty contacts with the pool walls and floor.
+// Pressure effects: buoyancy uses the in-situ water density (EOS-80) and the
+// hull's own compressibility; a pressure housing pushed past its depth rating
+// (or given a leak on purpose) floods through an orifice, compressing the air
+// inside (Boyle) - that internal pressure and the flooded water are what the
+// leak detector and ArduSub's FS_LEAK / FS_PRESS failsafes see.
 
 import { qToMat, qnormalize, clamp } from '../core/math.js';
 import { ThrusterState } from './thruster.js';
@@ -39,6 +44,7 @@ export class VehiclePlant {
     this.k = [new Float64Array(13), new Float64Array(13), new Float64Array(13), new Float64Array(13)];
     this.tmp = new Float64Array(13);
     this.diag = {};
+    this.flood = { active: false, volume: 0, pIn: env.pAtm ?? 101325, p0: env.pAtm ?? 101325, cause: '' };
     this.setModel(model);
     this.reset();
   }
@@ -74,9 +80,41 @@ export class VehiclePlant {
     if (pose.velocity) { y[7] = pose.velocity[0]; y[8] = pose.velocity[1]; y[9] = pose.velocity[2]; }
     if (pose.rates) { y[10] = pose.rates[0]; y[11] = pose.rates[1]; y[12] = pose.rates[2]; }
     for (const t of this.thrusters) { t.T = 0; t.Tcmd = 0; t.Teff = 0; t.pwm = 1500; }
+    this.clearFlood();
     this.accelNed = [0, 0, 0];
     this.nuDot = [0, 0, 0, 0, 0, 0];
     this.t = 0;
+  }
+
+  // ---- pressure housing: flooding ----
+  clearFlood() {
+    const p0 = this.env.pAtm ?? 101325; // sealed at the surface
+    this.flood = { active: false, volume: 0, pIn: p0, p0, cause: '', startDepth: NaN };
+  }
+  startLeak(cause = 'manual') {
+    if (this.flood.active) return;
+    this.flood.active = true;
+    this.flood.cause = cause;
+    this.flood.startDepth = this.y[2];
+  }
+  // orifice inflow Q = Cd A sqrt(2 dp / rho) while outside pressure exceeds the
+  // (Boyle-compressed) air pressure inside the housing
+  updateFlood(dt) {
+    const h = this.m.hull;
+    const f = this.flood;
+    if (!h) return;
+    const env = this.env, y = this.y;
+    const depth = y[2] + env.surfaceElevation(y[0], y[1]);
+    if (!f.active && h.floodOverRating && h.rating > 0 && depth > h.rating) this.startLeak('rating');
+    const Va = h.airVolume;
+    if (!(Va > 0)) { f.pIn = f.p0; return; }
+    if (f.active && f.volume < Va * 0.999) {
+      const pOut = env.pAtm + env.pressureGauge(Math.max(0, depth));
+      const pIn = (f.p0 * Va) / (Va - f.volume);
+      const dp = pOut - pIn;
+      if (dp > 0) f.volume = Math.min(Va * 0.999, f.volume + 0.62 * h.leakArea * Math.sqrt((2 * dp) / env.rho) * dt);
+    }
+    f.pIn = (f.p0 * Va) / (Va - f.volume);
   }
 
   get position() { return [this.y[0], this.y[1], this.y[2]]; }
@@ -107,12 +145,15 @@ export class VehiclePlant {
     const W = m.mass * g;
     tau[0] += R[6] * W; tau[1] += R[7] * W; tau[2] += R[8] * W;
 
-    // --- buoyancy ---
+    // --- buoyancy: in-situ water density and hull compression at this depth ---
     let subFrac = 1;
     const fb = [0, 0, 0], mb = [0, 0, 0];
     const depthCG = pz + eta; // depth below the local free surface (eta positive up)
+    const pg = env.pressureGauge(Math.max(0, depthCG));
+    const hull = m.hull;
+    const bScale = (env.densityAtGauge(pg) / rho) * Math.max(0.5, 1 - (hull ? hull.beta : 0) * pg);
     if (depthCG > this.boundR + 1e-3) {
-      const B = rho * g * m.volume;
+      const B = rho * g * m.volume * bScale;
       const fx = -R[6] * B, fy = -R[7] * B, fz = -R[8] * B;
       fb[0] = fx; fb[1] = fy; fb[2] = fz;
       const c = m.cb;
@@ -129,12 +170,19 @@ export class VehiclePlant {
         if (frac <= 0) continue;
         const dv = e.v * frac;
         vsub += dv;
-        const B = rho * g * dv;
+        const B = rho * g * dv * bScale;
         const fx = -R[6] * B, fy = -R[7] * B, fz = -R[8] * B;
         fb[0] += fx; fb[1] += fy; fb[2] += fz;
         mb[0] += e.p[1] * fz - e.p[2] * fy; mb[1] += e.p[2] * fx - e.p[0] * fz; mb[2] += e.p[0] * fy - e.p[1] * fx;
       }
       subFrac = m.volume > 0 ? vsub / m.volume : 0;
+    }
+    // water that flooded the housing is extra weight (taken at the centre of buoyancy)
+    if (this.flood.volume > 0) {
+      const Wf = rho * g * this.flood.volume, c = m.cb;
+      const fx = R[6] * Wf, fy = R[7] * Wf, fz = R[8] * Wf;
+      fb[0] += fx; fb[1] += fy; fb[2] += fz;
+      mb[0] += c[1] * fz - c[2] * fy; mb[1] += c[2] * fx - c[0] * fz; mb[2] += c[0] * fy - c[1] * fx;
     }
     for (let i = 0; i < 3; i++) { tau[i] += fb[i]; tau[3 + i] += mb[i]; }
 
@@ -207,14 +255,19 @@ export class VehiclePlant {
 
     // --- contacts with pool floor and walls ---
     const fc = [0, 0, 0, 0, 0, 0];
-    const pool = env.cfg.pool, ct = env.cfg.contact;
-    const hx = pool.length / 2, hy = pool.width / 2, D = pool.depth;
+    const ct = env.cfg.contact, pf = env.floor;
+    const hx = pf.L / 2, hy = pf.W / 2;
     for (const c of m.contacts) {
       const wx = y[0] + R[0] * c[0] + R[1] * c[1] + R[2] * c[2];
       const wy = y[1] + R[3] * c[0] + R[4] * c[1] + R[5] * c[2];
       const wz = pz + R[6] * c[0] + R[7] * c[1] + R[8] * c[2];
       let nX = 0, nY = 0, nZ = 0, pen = 0;
-      if (wz > D) { pen = wz - D; nZ = -1; }
+      const floorZ = pf.depthAt(wx);
+      if (wz > floorZ) {
+        // floor (possibly sloped): push out along the local floor normal
+        const k = pf.slopeAt(wx), nn = Math.sqrt(1 + k * k);
+        pen = (wz - floorZ) / nn; nX = k / nn; nZ = -1 / nn;
+      }
       else if (wx > hx) { pen = wx - hx; nX = -1; }
       else if (wx < -hx) { pen = -hx - wx; nX = 1; }
       else if (wy > hy) { pen = wy - hy; nY = -1; }
@@ -255,7 +308,7 @@ export class VehiclePlant {
     out[6] = 0.5 * (q[0] * r + q[1] * qq - q[2] * p);
 
     if (record) {
-      this.diag = { thrust: ft, buoyancy: [...fb, ...mb], damping: fd, contact: fc, submerged: subFrac, fluidBody: [ub, vb, wb], weight: W, buoyancyMag: Math.hypot(fb[0], fb[1], fb[2]) };
+      this.diag = { thrust: ft, buoyancy: [...fb, ...mb], damping: fd, contact: fc, submerged: subFrac, fluidBody: [ub, vb, wb], weight: W, buoyancyMag: Math.hypot(fb[0], fb[1], fb[2]), pressureGauge: pg, buoyancyScale: bScale };
       // inertial acceleration of the CG (NED) and specific force (body)
       const vd = [out[7] + qq * w - r * v, out[8] + r * u - p * w, out[9] + p * v - qq * u];
       this.accelNed = [R[0] * vd[0] + R[1] * vd[1] + R[2] * vd[2], R[3] * vd[0] + R[4] * vd[1] + R[5] * vd[2], R[6] * vd[0] + R[7] * vd[1] + R[8] * vd[2]];
@@ -266,6 +319,7 @@ export class VehiclePlant {
   // Advance by dt with ESC PWM per thruster (held constant over the step).
   step(dt, pwm) {
     for (let i = 0; i < this.thrusters.length; i++) this.thrusters[i].update(pwm ? pwm[i] ?? 1500 : 1500, dt);
+    this.updateFlood(dt);
     const y = this.y, [k1, k2, k3, k4] = this.k, t = this.tmp;
     this.deriv(y, k1, true);
     for (let i = 0; i < 13; i++) t[i] = y[i] + 0.5 * dt * k1[i];

@@ -580,11 +580,101 @@ export function occupancyField(positions, grid, { keepThin = true } = {}) {
         f[i + grid.nx * (j + grid.ny * k)] = s / 8;
       }
   if (keepThin) {
+    // Thin sheets (plates, duct walls thinner than about a cell) have no cell
+    // with half its volume inside, so they would vanish from the iso-surface.
+    // Cells next to such a sheet are lifted just above the iso level. A sheet
+    // is detected geometrically: an axis ray through the cell centre crosses
+    // the surface twice (in and out) within 1.2 cells. Surfaces of thick parts
+    // are left alone, so their iso-surface stays where the occupancy puts it.
     const surf = new VoxelGrid(grid.nx, grid.ny, grid.nz, grid.cell, grid.origin.slice());
     voxelizeSurface(positions, surf);
-    for (let i = 0; i < f.length; i++) if (surf.data[i] && f[i] < 0.55) f[i] = 0.55;
+    const thin = thinSheetCells(positions, grid, f, surf.data);
+    const { nx, ny, nz } = grid;
+    const nearThin = (i, j, k) => {
+      for (let dk = -1; dk <= 1; dk++) for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const a = i + di, b = j + dj, c = k + dk;
+        if (a < 0 || b < 0 || c < 0 || a >= nx || b >= ny || c >= nz) continue;
+        if (thin[a + nx * (b + ny * c)]) return true;
+      }
+      return false;
+    };
+    const lift = [];
+    for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const id = i + nx * (j + ny * k);
+      // bridge: surface cells touching a sheet join it to the part it is fixed to
+      if (thin[id] || (surf.data[id] && f[id] < 0.55 && nearThin(i, j, k))) lift.push(id);
+    }
+    for (const id of lift) f[id] = Math.max(f[id], 0.55);
   }
   return f;
+}
+
+// Cells (touched by the surface, less than ~half full) that sit on a sheet
+// thinner than 1.2 cells: along one axis a ray through the centre enters and
+// leaves the solid within that distance.
+export function thinSheetCells(positions, grid, occ, touched) {
+  const { nx, ny, nz, cell } = grid;
+  const o = grid.origin;
+  const N = nx * ny * nz, tri = positions.length / 9;
+  // triangles binned on the grid (CSR)
+  const count = new Uint32Array(N + 1);
+  const range = (t, a) => {
+    const v0 = positions[9 * t + a], v1 = positions[9 * t + 3 + a], v2 = positions[9 * t + 6 + a];
+    const n = a === 0 ? nx : a === 1 ? ny : nz;
+    return [Math.max(0, Math.floor((Math.min(v0, v1, v2) - o[a]) / cell)), Math.min(n - 1, Math.floor((Math.max(v0, v1, v2) - o[a]) / cell))];
+  };
+  const forBins = (t, fn) => {
+    const [a0, a1] = range(t, 0), [b0, b1] = range(t, 1), [c0, c1] = range(t, 2);
+    for (let k = c0; k <= c1; k++) for (let j = b0; j <= b1; j++) for (let i = a0; i <= a1; i++) fn(i + nx * (j + ny * k));
+  };
+  for (let t = 0; t < tri; t++) forBins(t, (b) => count[b + 1]++);
+  for (let b = 0; b < N; b++) count[b + 1] += count[b];
+  const items = new Uint32Array(count[N]);
+  const fill = count.slice(0, N);
+  for (let t = 0; t < tri; t++) forBins(t, (b) => { items[fill[b]++] = t; });
+  // ray (axis a through point p) - triangle intersection parameter along the axis
+  const cross = (t, a, p) => {
+    const b = (a + 1) % 3, c = (a + 2) % 3, q = 9 * t;
+    const B0 = positions[q + b], B1 = positions[q + 3 + b], B2 = positions[q + 6 + b];
+    const C0 = positions[q + c], C1 = positions[q + 3 + c], C2 = positions[q + 6 + c];
+    const w0 = (B2 - B1) * (p[c] - C1) - (C2 - C1) * (p[b] - B1);
+    const w1 = (B0 - B2) * (p[c] - C2) - (C0 - C2) * (p[b] - B2);
+    const w2 = (B1 - B0) * (p[c] - C0) - (C1 - C0) * (p[b] - B0);
+    const area = w0 + w1 + w2;
+    if (area === 0) return NaN;
+    if (area > 0 ? w0 < 0 || w1 < 0 || w2 < 0 : w0 > 0 || w1 > 0 || w2 > 0) return NaN;
+    return (w0 * positions[q + a] + w1 * positions[q + 3 + a] + w2 * positions[q + 6 + a]) / area - p[a];
+  };
+  const thin = new Uint8Array(N);
+  const reach = 1.5 * cell, span = 1.2 * cell;
+  const hits = [];
+  for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const id = i + nx * (j + ny * k);
+    if (!touched[id] || occ[id] >= 0.55) continue;
+    const p = [o[0] + (i + 0.5) * cell, o[1] + (j + 0.5) * cell, o[2] + (k + 0.5) * cell];
+    let isThin = false;
+    for (let a = 0; a < 3 && !isThin; a++) {
+      hits.length = 0;
+      const idx = [i, j, k];
+      for (let d = -2; d <= 2; d++) {
+        const cidx = idx.slice(); cidx[a] += d;
+        if (cidx[a] < 0 || cidx[a] >= (a === 0 ? nx : a === 1 ? ny : nz)) continue;
+        const bin = cidx[0] + nx * (cidx[1] + ny * cidx[2]);
+        for (let n = count[bin]; n < count[bin + 1]; n++) {
+          const s = cross(items[n], a, p);
+          if (s === s && Math.abs(s) <= reach) hits.push(s);
+        }
+      }
+      if (hits.length < 2) continue;
+      hits.sort((x, y) => x - y);
+      // dedupe (a triangle seen from two bins, or shared edges)
+      const u = [hits[0]];
+      for (let m = 1; m < hits.length; m++) if (hits[m] - u[u.length - 1] > 1e-6 * cell) u.push(hits[m]);
+      for (let m = 0; m + 1 < u.length && !isThin; m++) if (u[m + 1] - u[m] < span && u[m] <= 0.6 * cell && u[m + 1] >= -0.6 * cell) isThin = true;
+    }
+    if (isThin) thin[id] = 1;
+  }
+  return thin;
 }
 
 // Naive surface nets: returns quads [{v:[p0,p1,p2,p3]}] with outward winding

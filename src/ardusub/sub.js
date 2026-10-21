@@ -42,7 +42,7 @@ export class ArduSubSim {
     this.lastPilotYawInputMs = -1e9;
     this.desiredClimbRate = 0;
     this.atSurface = false; this.atBottom = false; this.bottomCount = 0;
-    this.failsafe = { pilotInput: false, lastPilotInput: 0 };
+    this.failsafe = { pilotInput: false, lastPilotInput: 0, leak: false, lastLeakWarn: 0, internalPressure: false, lastPressGood: 0, lastPressWarn: 0 };
     this.attitudeTargetMsg = null;
     this.depthTargetOverride = null;
     this.motorTest = null;
@@ -386,6 +386,33 @@ export class ArduSubSim {
     if (P.FS_PILOT_INPUT === 2) this.disarm('failsafe');
   }
 
+  // Sub::three_hz_loop() -> failsafe_leak_check(), failsafe_internal_pressure_check()
+  threeHzLoop() {
+    this.failsafeLeakCheck();
+    this.failsafeInternalPressureCheck();
+  }
+  failsafeLeakCheck() {
+    const P = this.params, f = this.failsafe;
+    const status = !!this.sensors.leak;
+    // do nothing if we are dry, or if leak failsafe action is disabled
+    if (!status || !P.FS_LEAK_ENABLE) { f.leak = false; return; }
+    // we have a leak: always send a warning every 20 seconds
+    if (this.time > f.lastLeakWarn + 20) { f.lastLeakWarn = this.time; this.text(2, 'Leak Detected'); }
+    // do nothing if we have already triggered the failsafe action
+    if (f.leak) return;
+    f.leak = true;
+    if (P.FS_LEAK_ENABLE === 2 && this.armed) this.setMode(MODE.SURFACE, 'leak failsafe');
+  }
+  failsafeInternalPressureCheck() {
+    const P = this.params, f = this.failsafe;
+    if (!P.FS_PRESS_ENABLE) return;
+    if (this.sensors.internalPressure < P.FS_PRESS_MAX) { f.lastPressGood = this.time; f.lastPressWarn = this.time; f.internalPressure = false; return; }
+    // 2 seconds with no readings below threshold triggers failsafe
+    if (this.time > f.lastPressGood + 2) f.internalPressure = true;
+    // warn every 30 seconds
+    if (f.internalPressure && this.time > f.lastPressWarn + 30) { f.lastPressWarn = this.time; this.text(4, 'Internal pressure critical!'); }
+  }
+
   // One iteration of ArduSub's fast loop. Sensors must already reflect the plant.
   fastLoop(dt) {
     this.time += dt;
@@ -401,6 +428,7 @@ export class ArduSubSim {
     this.runMode();
     this.updateSurfaceBottom();
     if (!this._fsTick || this.time >= this._fsTick) { this._fsTick = this.time + 0.1; this.checkFailsafes(); }
+    if (!this._fs3Tick || this.time >= this._fs3Tick) { this._fs3Tick = this.time + 0.3; this.threeHzLoop(); }
     return pwm;
   }
 
@@ -419,6 +447,7 @@ export class ArduSubSim {
       lights: [this.js.lights1 / 10, this.js.lights2 / 10], camTilt: this.js.camTilt,
       inputHold: this.js.inputHoldEngaged, rollPitchMode: this.js.rollPitchFlag,
       atSurface: this.atSurface, atBottom: this.atBottom, failsafe: this.failsafe.pilotInput,
+      leak: this.failsafe.leak, internalPressureFs: this.failsafe.internalPressure,
       throttle: this.motors.getThrottleBidirectional(),
       inputs: [this.motors.rollIn, this.motors.pitchIn, this.motors.yawIn, this.motors.getThrottleBidirectional(), this.motors.forwardIn, this.motors.lateralIn],
     };

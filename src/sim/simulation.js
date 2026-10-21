@@ -6,6 +6,7 @@ import { qFromEuler, qToEuler, qToMat, m3mulv, RAD, DEG } from '../core/math.js'
 import { Environment } from '../physics/environment.js';
 import { VehiclePlant } from '../physics/body.js';
 import { buildPlantModel, cgOf } from '../vehicle/model.js';
+import { thrusterLimits } from '../vehicle/config.js';
 import { analyzeLayout } from '../alloc/allocation.js';
 import { FRAMES, frameTable } from '../alloc/frames.js';
 import { SensorSuite } from '../ardusub/sensors.js';
@@ -15,7 +16,7 @@ import { Telemetry } from './telemetry.js';
 export function buildMixer(cfg, geo) {
   const warnings = [];
   const cg = cgOf(cfg, geo);
-  const th = cfg.thrusters.map((t) => ({ ...t, fwdMax: t.curve?.fwdMax ?? 50, revMax: t.curve?.revMax ?? 40 }));
+  const th = cfg.thrusters.map((t) => ({ ...t, ...thrusterLimits(t) }));
   const analysis = analyzeLayout(th, cg, { threshold: cfg.mixer.threshold ?? 0.02, enabledAxes: cfg.mixer.axisEnable });
   let factors, variant;
   const src = cfg.mixer.source;
@@ -50,7 +51,7 @@ export class Simulation {
   }
 
   rebuild(cfg = this.cfg, geo = this.geo, { keepState = true } = {}) {
-    const prev = keepState && this.plant ? { y: Float64Array.from(this.plant.y), armed: this.fw?.armed, mode: this.fw?.mode, time: this.time, thrusters: this.plant.thrusters.map((t) => t.T) } : null;
+    const prev = keepState && this.plant ? { y: Float64Array.from(this.plant.y), armed: this.fw?.armed, mode: this.fw?.mode, time: this.time, thrusters: this.plant.thrusters.map((t) => t.T), flood: { ...this.plant.flood } } : null;
     this.cfg = cfg;
     this.geo = geo;
     this.rng = new RNG(cfg.sim?.seed ?? 1);
@@ -73,6 +74,10 @@ export class Simulation {
     if (prev) {
       this.plant.y.set(prev.y);
       this.plant.thrusters.forEach((t, i) => (t.T = prev.thrusters[i] ?? 0));
+      if (prev.flood) this.plant.flood = { ...prev.flood };
+      // the pool may have shrunk around the vehicle
+      const inside = this.keepInPool(this.plant.position);
+      if (inside.moved) { this.plant.y[0] = inside.p[0]; this.plant.y[1] = inside.p[1]; this.plant.y[2] = inside.p[2]; for (let i = 7; i < 13; i++) this.plant.y[i] = 0; }
       this.time = prev.time;
       this.fw.time = prev.time;
       this.sensors.update(this.plant, this.dtFw);
@@ -84,9 +89,19 @@ export class Simulation {
     this.emit('rebuild');
   }
 
+  // Clamp a CG position so the whole vehicle fits inside the pool (walls and floor).
+  keepInPool(pos) {
+    const fl = this.env.floor, r = Math.max(0.05, this.plant?.boundR || 0.3);
+    const hx = Math.max(0, fl.L / 2 - r), hy = Math.max(0, fl.W / 2 - r);
+    const p = [Math.min(hx, Math.max(-hx, pos[0])), Math.min(hy, Math.max(-hy, pos[1])), pos[2]];
+    p[2] = Math.min(p[2], Math.max(0, fl.depthAt(p[0]) - r));
+    const moved = Math.abs(p[0] - pos[0]) + Math.abs(p[1] - pos[1]) + Math.abs(p[2] - pos[2]) > 1e-9;
+    return { p, moved };
+  }
+
   reset(pose) {
     const s = this.cfg.start || {};
-    const p = pose?.position ?? s.position ?? [0, 0, 1];
+    const p = this.keepInPool(pose?.position ?? s.position ?? [0, 0, 1]).p;
     const yaw = (pose?.yaw ?? s.yaw ?? 0) * DEG;
     this.plant.reset({ position: p.slice(), quaternion: qFromEuler(0, 0, yaw) });
     this.sensors.reset();
@@ -148,14 +163,17 @@ export class Simulation {
     const e = qToEuler(p.quaternion);
     const R = qToMat(p.quaternion);
     const st = fw.status();
+    // targets only exist while a controller is active (NaN breaks the graph line)
+    const attOn = fw.armed && fw.mode !== MODE.MANUAL;
+    const depthOn = fw.armed && (fw.mode === MODE.ALT_HOLD || fw.mode === MODE.POSHOLD || fw.mode === MODE.SURFACE);
     const rec = {
       t: this.time, armed: fw.armed ? 1 : 0, mode: fw.mode,
       roll: e[0] * RAD, pitch: e[1] * RAD, yaw: e[2] * RAD,
-      roll_t: st.targetEuler[0] * RAD, pitch_t: st.targetEuler[1] * RAD, yaw_t: st.targetEuler[2] * RAD,
+      roll_t: attOn ? st.targetEuler[0] * RAD : NaN, pitch_t: attOn ? st.targetEuler[1] * RAD : NaN, yaw_t: attOn && fw.mode !== MODE.ACRO ? st.targetEuler[2] * RAD : NaN,
       ahrs_roll: s.roll * RAD, ahrs_pitch: s.pitch * RAD, ahrs_yaw: s.yaw * RAD,
       p: p.rates[0] * RAD, q: p.rates[1] * RAD, r: p.rates[2] * RAD,
-      p_t: st.rateTarget[0] * RAD, q_t: st.rateTarget[1] * RAD, r_t: st.rateTarget[2] * RAD,
-      depth: p.position[2], depth_meas: s.depthMeasured, depth_t: st.depthTarget, climb: -m3mulv(R, p.velocityBody)[2],
+      p_t: attOn ? st.rateTarget[0] * RAD : NaN, q_t: attOn ? st.rateTarget[1] * RAD : NaN, r_t: attOn ? st.rateTarget[2] * RAD : NaN,
+      depth: p.position[2], depth_meas: s.depthMeasured, depth_t: depthOn ? st.depthTarget : NaN, climb: -m3mulv(R, p.velocityBody)[2],
       x: p.position[0], y: p.position[1], z: p.position[2],
       u: p.velocityBody[0], v: p.velocityBody[1], w: p.velocityBody[2],
       in_roll: st.inputs[0], in_pitch: st.inputs[1], in_yaw: st.inputs[2], in_thr: st.inputs[3], in_fwd: st.inputs[4], in_lat: st.inputs[5],
@@ -163,6 +181,8 @@ export class Simulation {
       pit_P: fw.att.pidPitch.info.P, pit_I: fw.att.pidPitch.info.I, pit_D: fw.att.pidPitch.info.D,
       yaw_P: fw.att.pidYaw.info.P, yaw_I: fw.att.pidYaw.info.I, yaw_D: fw.att.pidYaw.info.D,
       saturated: st.saturated ? 1 : 0, submerged: p.diag.submerged ?? 1, gain: fw.gain,
+      press_abs: s.pressureMeas / 100, press_int: s.internalPressure / 100, flood: p.flood.volume * 1e6,
+      floor_dist: this.env.floorDepth(p.position[0]) - p.position[2],
       thrust_total: p.thrusters.reduce((a, t) => a + Math.abs(t.Teff), 0),
     };
     for (let i = 0; i < p.thrusters.length && i < 12; i++) {

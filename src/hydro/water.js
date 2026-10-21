@@ -1,13 +1,49 @@
 // Water properties and closed-form hydrodynamic estimates used as defaults
 // before (or instead of) the CFD/BEM analysis.
 
-// Fresh-water density (Tanaka et al. 2001 / Thiesen form), plus a linear
-// salinity correction (~0.78 kg/m^3 per g/kg, good to ~1 kg/m^3 for 0-40 g/kg).
+// ---- UNESCO EOS-80 equation of state of seawater -------------------------
+// Fofonoff & Millard (1983), UNESCO Technical Papers in Marine Science 44.
+// S practical salinity (≈ g/kg), T in °C on the IPTS-68 scale, p sea pressure
+// (absolute minus one atmosphere) in bar.
+export const toT68 = (t90) => t90 * 1.00024;
+
+// one-atmosphere density [kg/m^3]
+export function eos80Density0(S, T) {
+  const rw = 999.842594 + T * (6.793952e-2 + T * (-9.095290e-3 + T * (1.001685e-4 + T * (-1.120083e-6 + T * 6.536332e-9))));
+  const A = 8.24493e-1 + T * (-4.0899e-3 + T * (7.6438e-5 + T * (-8.2467e-7 + T * 5.3875e-9)));
+  const B = -5.72466e-3 + T * (1.0227e-4 - T * 1.6546e-6);
+  return rw + A * S + B * S * Math.sqrt(S) + 4.8314e-4 * S * S;
+}
+
+// secant bulk modulus K(S,T,p) [bar]
+export function eos80SecantBulkModulus(S, T, p) {
+  const Kw = 19652.21 + T * (148.4206 + T * (-2.327105 + T * (1.360477e-2 - T * 5.155288e-5)));
+  const Aw = 3.239908 + T * (1.43713e-3 + T * (1.16092e-4 - T * 5.77905e-7));
+  const Bw = 8.50935e-5 + T * (-6.12293e-6 + T * 5.2787e-8);
+  const sr = Math.sqrt(S);
+  const K0 = Kw + S * (54.6746 + T * (-0.603459 + T * (1.09987e-2 - T * 6.1670e-5))) + S * sr * (7.944e-2 + T * (1.6483e-2 - T * 5.3009e-4));
+  const A = Aw + S * (2.2838e-3 + T * (-1.0981e-5 - T * 1.6078e-6)) + 1.91075e-4 * S * sr;
+  const B = Bw + S * (-9.9348e-7 + T * (2.0816e-8 + T * 9.1697e-10));
+  return K0 + p * (A + B * p);
+}
+
+// in-situ density [kg/m^3]
+export function eos80Density(S, T, p) {
+  return eos80Density0(S, T) / (1 - p / eos80SecantBulkModulus(S, T, p));
+}
+
+// Water density at the surface. Fresh water from Tanaka et al. (2001), the
+// most accurate pure-water formula; the salt contribution from EOS-80.
 export function waterDensity(tempC = 20, salinity = 0) {
   const T = tempC;
   const rhoFresh = 999.974950 * (1 - ((T - 3.983035) ** 2 * (T + 301.797)) / (522528.9 * (T + 69.34881)));
-  return rhoFresh + 0.78 * salinity;
+  if (!(salinity > 0)) return rhoFresh;
+  const T68 = toT68(T);
+  return rhoFresh + eos80Density0(salinity, T68) - eos80Density0(0, T68);
 }
+
+// Standard atmosphere: air pressure [hPa] at a site elevation [m above sea level].
+export const airPressureAtAltitude = (h) => 1013.25 * Math.pow(1 - 2.25577e-5 * h, 5.25588);
 
 // Dynamic viscosity of water [Pa s] (Vogel equation) with a mild salinity factor.
 export function waterViscosity(tempC = 20, salinity = 0) {

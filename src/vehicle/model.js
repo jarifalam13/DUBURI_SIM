@@ -6,9 +6,18 @@ import { VoxelGrid, rayHitDistance } from '../geometry/mesh.js';
 import { ellipsoidAddedMass, dragFromProjections } from '../hydro/water.js';
 import { shiftMassMatrix } from '../hydro/bem.js';
 import { parametricCurve } from '../physics/thruster.js';
+import { DEFAULT_HULL } from './config.js';
 
 const zeros6 = () => Array.from({ length: 6 }, () => new Array(6).fill(0));
 const diag6 = (d) => { const M = zeros6(); for (let i = 0; i < 6; i++) M[i][i] = d[i]; return M; };
+export const isMat6 = (M) => Array.isArray(M) && M.length === 6 && M.every((r) => Array.isArray(r) && r.length === 6 && r.every(Number.isFinite));
+
+// Parse a pasted 6 x 6 matrix (rows on lines, any of comma / tab / space / ;)
+export function parseMatrix6(text) {
+  const nums = String(text).replace(/[[\]]/g, ' ').split(/[\s,;]+/).filter(Boolean).map(Number);
+  if (nums.length !== 36 || !nums.every(Number.isFinite)) throw new Error(`Expected 36 numbers, found ${nums.filter(Number.isFinite).length}`);
+  return Array.from({ length: 6 }, (_, i) => nums.slice(6 * i, 6 * i + 6));
+}
 
 export function cgOf(cfg, geo) {
   if (cfg.mass.cgMode === 'manual') return cfg.mass.cg.slice();
@@ -78,6 +87,7 @@ export function buildPlantModel(cfg, geo, env) {
   let MA, maSource;
   const am = cfg.hydro.addedMass;
   if (am.mode === 'bem' && am.matrix) { MA = shiftMassMatrix(am.matrix, am.ref || [0, 0, 0], cg); maSource = 'BEM'; }
+  else if (am.mode === 'matrix' && isMat6(am.userMatrix)) { MA = am.userRef === 'origin' ? shiftMassMatrix(am.userMatrix, [0, 0, 0], cg) : am.userMatrix.map((r) => r.slice()); maSource = 'your 6×6 matrix'; }
   else if (am.mode === 'manual') { MA = diag6(am.diag); maSource = 'manual'; }
   else {
     const s = geo.bbox.size;
@@ -95,7 +105,8 @@ export function buildPlantModel(cfg, geo, env) {
     DL = dm.DL; DQ = dm.DQ; dSource = 'CFD';
     const off = Math.hypot(...vsub(dm.ref || cg, cg));
     if (off > 0.01) warnings.push(`CFD damping was computed about a point ${(off * 100).toFixed(1)} cm from the current CG; re-run the CFD lab for best accuracy.`);
-  } else if (dm.mode === 'manual') { DL = diag6(dm.linear); DQ = diag6(dm.quadratic); dSource = 'manual'; }
+  } else if (dm.mode === 'matrix' && isMat6(dm.userDL) && isMat6(dm.userDQ)) { DL = dm.userDL.map((r) => r.slice()); DQ = dm.userDQ.map((r) => r.slice()); dSource = 'your 6×6 matrices'; }
+  else if (dm.mode === 'manual') { DL = diag6(dm.linear); DQ = diag6(dm.quadratic); dSource = 'manual'; }
   else {
     const d = dragFromProjections(geo.projections, rho, dm.Cd ?? 1.0);
     DL = diag6(d.linear); DQ = diag6(d.quadratic); dSource = `projected-area estimate (Cd ${dm.Cd ?? 1})`;
@@ -116,7 +127,17 @@ export function buildPlantModel(cfg, geo, env) {
   });
 
   const contacts = geo.contacts.map((c) => vsub(c, cg));
-  const plant = { mass, Ig, MA, DL, DQ, volume, cb: vsub(cb, cg), buoyEls, contacts, thrusters, hullHeight: geo.bbox.size[2] };
+  // pressure housing: depth rating, compressibility, floodable air volume
+  const H = { ...DEFAULT_HULL, ...(cfg.hull || {}) };
+  const hull = {
+    rating: Math.max(0, +H.depthRating || 0),
+    beta: Math.max(0, +H.compressibility || 0) / 100 / 1e6, // % per 10 bar -> 1/Pa
+    floodOverRating: H.floodOverRating !== false,
+    leakArea: Math.max(0, +H.leakArea || 0) * 1e-6, // mm^2 -> m^2
+    airVolume: (+H.airVolume > 0 ? +H.airVolume / 1000 : 0.2 * volume), // L -> m^3 (auto: 20% of the displaced volume)
+    leakSensor: H.leakSensor !== false,
+  };
+  const plant = { mass, Ig, MA, DL, DQ, volume, cb: vsub(cb, cg), buoyEls, contacts, thrusters, hullHeight: geo.bbox.size[2], hull };
 
   const g = env.g;
   const W = mass * g, B = rho * g * volume;
@@ -132,6 +153,7 @@ export function buildPlantModel(cfg, geo, env) {
     pitchPeriod: GM > 1e-6 ? 2 * Math.PI * Math.sqrt((Ig[4] + MA[4][4]) / (B * GM)) : NaN,
     Ig, MA, DL, DQ, maSource, dSource,
     deductions: thrusters.map((t) => [t.deduction, t.deductionRev]),
+    hull,
     warnings,
   };
   if (GM <= 0) warnings.push('Centre of buoyancy is not above the centre of gravity: the vehicle has no passive roll/pitch stability.');

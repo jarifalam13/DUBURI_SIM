@@ -11,6 +11,8 @@
 // verts (CCW about n)}. Near-field integrals use sub-triangle quadrature, the
 // self potential uses the exact polygon formula.
 
+import { kernels } from '../wasm/kernels.js';
+
 const FOUR_PI = 4 * Math.PI;
 
 export function rectPanelToPolygon(p) {
@@ -78,6 +80,11 @@ export function solveAddedMass(panelsIn, opts = {}) {
   const ref = opts.ref ?? [0, 0, 0];
   const N = panels.length;
   const onProgress = opts.onProgress || (() => {});
+  const KW = opts.wasm === false ? null : kernels();
+  if (KW && N <= 7000 && panels.every((p) => p.verts.length === 4 || p.verts.length === 3)) {
+    const r = solveWasm(KW, panels, rho, ref, opts, onProgress);
+    if (r) return r;
+  }
   const K = N <= 2800 ? new Float64Array(N * N) : new Float32Array(N * N);
   const cx = new Float64Array(N), cy = new Float64Array(N), cz = new Float64Array(N);
   const nx = new Float64Array(N), ny = new Float64Array(N), nz = new Float64Array(N);
@@ -192,7 +199,58 @@ export function solveAddedMass(panelsIn, opts = {}) {
     }
   const Ms = M.map((row, l) => row.map((v, j) => 0.5 * (v + M[j][l])));
   onProgress(1, 'Done');
-  return { M: Ms, raw: M, panels: N, iterations, asymmetry: mag ? asym / mag : 0, ref };
+  return { M: Ms, raw: M, panels: N, iterations, asymmetry: mag ? asym / mag : 0, ref, engine: 'js' };
+}
+
+// Same algorithm with the heavy O(N^2) parts (influence matrix, mat-vec,
+// potential integration) in the WebAssembly kernels.
+function solveWasm(KW, panels, rho, ref, opts, onProgress) {
+  const N = panels.length;
+  if (!KW.bem_init(N)) return null;
+  const f64 = (ptr, len) => new Float64Array(KW.memory.buffer, ptr, len);
+  const C = f64(KW.bem_centroids(), 3 * N), Nn = f64(KW.bem_normals(), 3 * N), A = f64(KW.bem_areas(), N), V = f64(KW.bem_verts(), 12 * N);
+  panels.forEach((p, i) => {
+    C.set(p.c, 3 * i); Nn.set(p.n, 3 * i); A[i] = p.area;
+    for (let e = 0; e < 4; e++) V.set(p.verts[Math.min(e, p.verts.length - 1)], 12 * i + 3 * e);
+  });
+  onProgress(0.05, 'Building influence matrix');
+  KW.bem_assemble();
+  onProgress(0.55, 'Solving source strengths');
+  const xPtr = KW.alloc(N * 8), yPtr = KW.alloc(N * 8);
+  const sPtr = KW.alloc(6 * N * 8), pPtr = KW.alloc(6 * N * 8);
+  if (!xPtr || !yPtr || !sPtr || !pPtr) return null;
+  const matvec = (x, y) => { f64(xPtr, N).set(x); KW.bem_matvec(xPtr, yPtr); y.set(f64(yPtr, N)); };
+  const rhs = [];
+  for (let j = 0; j < 6; j++) rhs.push(new Float64Array(N));
+  panels.forEach((p, i) => {
+    const rx = p.c[0] - ref[0], ry = p.c[1] - ref[1], rz = p.c[2] - ref[2], n = p.n;
+    rhs[0][i] = n[0]; rhs[1][i] = n[1]; rhs[2][i] = n[2];
+    rhs[3][i] = ry * n[2] - rz * n[1]; rhs[4][i] = rz * n[0] - rx * n[2]; rhs[5][i] = rx * n[1] - ry * n[0];
+  });
+  const iterations = [];
+  const sig = f64(sPtr, 6 * N);
+  for (let j = 0; j < 6; j++) {
+    const { x, iters, resid } = gmres(matvec, rhs[j], N, { tol: opts.tol ?? 1e-8, maxIter: opts.maxIter ?? 400, restart: 60 });
+    f64(sPtr, 6 * N).set(x, j * N);
+    iterations.push({ iters, resid });
+    onProgress(0.55 + 0.3 * ((j + 1) / 6), 'Solving source strengths');
+  }
+  void sig;
+  onProgress(0.85, 'Integrating pressures');
+  KW.bem_potentials(sPtr, pPtr, 6);
+  const phi = f64(pPtr, 6 * N);
+  const M = Array.from({ length: 6 }, () => new Array(6).fill(0));
+  for (let l = 0; l < 6; l++)
+    for (let j = 0; j < 6; j++) {
+      let s = 0;
+      for (let i = 0; i < N; i++) s += phi[l * N + i] * rhs[j][i] * panels[i].area;
+      M[l][j] = -rho * s;
+    }
+  let asym = 0, mag = 0;
+  for (let l = 0; l < 6; l++) for (let j = 0; j < 6; j++) { asym = Math.max(asym, Math.abs(M[l][j] - M[j][l])); mag = Math.max(mag, Math.abs(M[l][j])); }
+  const Ms = M.map((row, l) => row.map((v, j) => 0.5 * (v + M[j][l])));
+  onProgress(1, 'Done');
+  return { M: Ms, raw: M, panels: N, iterations, asymmetry: mag ? asym / mag : 0, ref, engine: 'wasm' };
 }
 
 // Restarted GMRES (Saad) for dense nonsymmetric systems.

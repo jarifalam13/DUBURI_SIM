@@ -99,12 +99,6 @@ export class JoystickHandler {
   handlePress(i, shift, held) {
     const sub = this.sub, P = sub.params;
     const fn = this.buttonFunction(i, shift);
-    const gainSteps = () => {
-      const minG = Math.min(Math.max(P.JS_GAIN_MIN, 0.1), 0.8);
-      const maxG = Math.min(Math.max(P.JS_GAIN_MAX, minG), 1);
-      const n = Math.min(Math.max(Math.trunc(P.JS_GAIN_STEPS), 1), 10);
-      return { minG, maxG, n };
-    };
     const lightStep = 1000 / Math.max(1, P.JS_LIGHTS_STEPS);
     switch (fn) {
       case 2: sub.armed ? sub.disarm('joystick') : sub.arm('joystick'); break;
@@ -136,12 +130,7 @@ export class JoystickHandler {
       case 35: if (!held) this.lights2 = Math.min(1000, this.lights2 + lightStep); break;
       case 36: if (!held) this.lights2 = Math.max(0, this.lights2 - lightStep); break;
       case 41: if (!held) { this.gainToggleLow = !this.gainToggleLow; sub.gain = this.gainToggleLow ? 0.5 : 1; sub.text(6, `#Gain: ${Math.round(sub.gain * 100)}%`); } break;
-      case 42: case 43: if (!held) {
-        const { minG, maxG, n } = gainSteps();
-        if (n === 1) sub.gain = Math.min(Math.max(P.JS_GAIN_DEFAULT, minG), maxG);
-        else sub.gain = Math.min(Math.max(sub.gain + (fn === 42 ? 1 : -1) * ((maxG - minG) / (n - 1)), minG), maxG);
-        sub.text(6, `#Gain is ${Math.round(sub.gain * 100)}%`);
-      } break;
+      case 42: case 43: if (!held) this.gainStep(fn === 42 ? 1 : -1); break;
       case 44: this.rollTrim = Math.min(200, Math.max(-200, this.rollTrim + 10)); break;
       case 45: this.rollTrim = Math.min(200, Math.max(-200, this.rollTrim - 10)); break;
       case 46: this.pitchTrim = Math.min(200, Math.max(-200, this.pitchTrim + 10)); break;
@@ -168,6 +157,15 @@ export class JoystickHandler {
       case 65: this.servos[0] = 1500; break;
       default: break;
     }
+  }
+  gainStep(dir) {
+    const sub = this.sub, P = sub.params;
+    const minG = Math.min(Math.max(P.JS_GAIN_MIN, 0.1), 0.8);
+    const maxG = Math.min(Math.max(P.JS_GAIN_MAX, minG), 1);
+    const n = Math.min(Math.max(Math.trunc(P.JS_GAIN_STEPS), 1), 10);
+    if (n === 1) sub.gain = Math.min(Math.max(P.JS_GAIN_DEFAULT, minG), maxG);
+    else sub.gain = Math.min(Math.max(sub.gain + dir * ((maxG - minG) / (n - 1)), minG), maxG);
+    sub.text(6, `#Gain is ${Math.round(sub.gain * 100)}%`);
   }
   handleRelease(i, shift) {
     const fn = this.buttonFunction(i, shift);

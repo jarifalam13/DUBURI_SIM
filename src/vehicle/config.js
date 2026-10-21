@@ -8,6 +8,30 @@ import { THRUSTER_PRESETS } from '../physics/thruster.js';
 import { DEFAULT_ENVIRONMENT } from '../physics/environment.js';
 
 export const CONFIG_SCHEMA = 'duburi.vehicle';
+
+// Pressure housing (electronics / battery enclosures) of the vehicle.
+export const DEFAULT_HULL = {
+  depthRating: 100, // m: rated depth of the pressure housings
+  compressibility: 0, // % of the displaced volume lost per 10 bar (about 100 m); 0 = rigid
+  airVolume: 0, // L of air inside the housings (0 = auto: 20% of the displaced volume)
+  leakArea: 2, // mm²: effective leak hole once a housing fails
+  floodOverRating: true, // housings start to leak below the rated depth
+  leakSensor: true, // a leak detector is fitted (ArduSub LEAK1_PIN set)
+};
+
+// External depth/pressure sensors (absolute pressure range, resolution).
+export const DEPTH_SENSORS = {
+  bar02: { label: 'Bar02 (2 bar · 10 m)', maxBar: 2, resMbar: 0.016 },
+  bar30: { label: 'Bar30 (30 bar · 300 m)', maxBar: 30, resMbar: 0.2 },
+  custom: { label: 'Custom' },
+};
+export function depthSensorSpec(s = {}) {
+  const p = DEPTH_SENSORS[s.depthSensor] ?? DEPTH_SENSORS.bar30;
+  const custom = s.depthSensor === 'custom';
+  const maxBar = custom ? Math.max(0.1, +s.depthSensorMax || 30) : p.maxBar;
+  const resMbar = custom ? Math.max(0, +s.depthSensorRes || 0) : p.resMbar;
+  return { maxPa: maxBar * 1e5, resPa: resMbar * 100, maxBar, resMbar, label: custom ? `Custom (${maxBar} bar)` : p.label };
+}
 export const CONFIG_VERSION = 1;
 
 export function thrusterFromPreset(base, presetKey = 't200-16v') {
@@ -33,13 +57,22 @@ export function thrusterFromPreset(base, presetKey = 't200-16v') {
   };
 }
 
+// Thrust limits of a thruster definition (measured table wins over the parametric curve).
+export function thrusterLimits(t) {
+  if (Array.isArray(t.table) && t.table.length >= 2) {
+    const T = t.table.map((r) => +r[1]);
+    return { fwdMax: Math.max(1e-6, ...T), revMax: Math.max(1e-6, ...T.map((v) => -v)) };
+  }
+  return { fwdMax: t.curve?.fwdMax ?? 50, revMax: t.curve?.revMax ?? 40 };
+}
+
 export function defaultConfig() {
   return {
     schema: CONFIG_SCHEMA,
     version: CONFIG_VERSION,
     name: 'DUBURI sample ROV',
     model: { source: 'sample', units: 'mm', forward: '+X', up: '+Z', origin: 'bbox', offset: [0, 0, 0], color: '#dfe6ea', sealedHull: false, fileName: null },
-    mass: { mass: 13.5, cgMode: 'cb-offset', cgOffset: [0, 0, 0.025], cg: [0, 0, 0], inertia: { mode: 'auto', Ixx: 0.3, Iyy: 0.4, Izz: 0.45, Pxy: 0, Pxz: 0, Pyz: 0 } },
+    mass: { mass: 13.5, source: 'estimate', cgMode: 'cb-offset', cgOffset: [0, 0, 0.025], cg: [0, 0, 0], inertia: { mode: 'auto', Ixx: 0.3, Iyy: 0.4, Izz: 0.45, Pxy: 0, Pxz: 0, Pyz: 0 } },
     buoyancy: { mode: 'auto', volume: 0.0135, cb: [0, 0, 0] },
     hydro: {
       addedMass: { mode: 'estimate', diag: [6, 8, 15, 0.15, 0.15, 0.15], matrix: null, ref: [0, 0, 0], meta: null },
@@ -47,7 +80,8 @@ export function defaultConfig() {
     },
     thrusters: heavyLayout().map((t) => thrusterFromPreset(t, 't200-16v')),
     mixer: { source: 'auto', saturation: 'priority', threshold: 0.02, axisEnable: { roll: true, pitch: true, yaw: true, throttle: true, forward: true, lateral: true }, custom: null },
-    sensors: { gyroNoise: 0.0015, accelNoise: 0.04, attitudeNoise: 0.02, depthNoise: 0.002, depthRate: 50, positioning: true, positionNoise: 0.01, positionRate: 10 },
+    sensors: { gyroNoise: 0.0015, accelNoise: 0.04, attitudeNoise: 0.02, depthNoise: 0.002, depthRate: 50, depthSensor: 'bar30', depthSensorMax: 30, depthSensorRes: 0.2, depthSensorPos: [0, 0, 0], positioning: true, positionNoise: 0.01, positionRate: 10 },
+    hull: { ...DEFAULT_HULL },
     environment: JSON.parse(JSON.stringify(DEFAULT_ENVIRONMENT)),
     start: { position: [0, 0, 1.0], yaw: 0 },
     sim: { physicsRate: 800, seed: 1 },

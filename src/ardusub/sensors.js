@@ -1,14 +1,20 @@
 // Sensor and state-estimate emulation feeding the firmware port:
 //  - IMU: gyro/accel with noise, 2-pole low-pass (INS_GYRO_FILTER / INS_ACCEL_FILTER)
 //  - AHRS attitude: truth + small slowly varying error, board trim (AHRS_TRIM_X/Y)
-//  - Depth: pressure sensor -> ArduSub's depth formula (9800 Pa/m * BARO_SPEC_GRAV),
-//    noise, update rate and delay, fused with the accelerometer by a
-//    3rd-order complementary filter (as in ArduPilot's classic inertial nav)
+//  - Depth: external pressure sensor (Bar02 / Bar30 / custom) reading the
+//    absolute water pressure at its mounting point (compressible-water
+//    hydrostatics + wave pressure), with range limit, resolution, noise, rate
+//    and delay; converted by AP_Baro's water formula
+//    (ground_pressure - p) / 9800 / BARO_SPEC_GRAV and fused with the
+//    accelerometer by a 3rd-order complementary filter (classic inertial nav)
+//  - Internal (autopilot) barometer: enclosure air pressure, for FS_PRESS
+//  - Leak detector: wet as soon as water has entered the housing (FS_LEAK)
 //  - Optional horizontal positioning (DVL/USBL-like) for position hold
 
 import { qFromEuler, qToEuler, qmul, qFromAxisAngleVec, qToMat, m3mulv, wrap360cd } from '../core/math.js';
 import { LowPassFilter2p } from './control.js';
 import { GaussMarkov } from '../core/rng.js';
+import { depthSensorSpec } from '../vehicle/config.js';
 
 export class SensorSuite {
   constructor(rng) {
@@ -27,6 +33,16 @@ export class SensorSuite {
     this.trim = [params.AHRS_TRIM_X ?? 0, params.AHRS_TRIM_Y ?? 0];
     this.specGrav = params.BARO_SPEC_GRAV ?? 1;
     this.depthDelay = Math.max(0, (params.EK3_HGT_DELAY ?? 60) / 1000);
+    this.spec = depthSensorSpec(cfg);
+    // AP_Baro calibrates ground pressure at boot: the vehicle is powered on at the surface
+    this.groundPressure = this.quantize(env ? env.pAtm : 101325);
+  }
+  quantize(p) {
+    const s = this.spec;
+    if (!s) return p;
+    let v = Math.min(s.maxPa, Math.max(0, p));
+    if (s.resPa > 0) v = Math.round(v / s.resPa) * s.resPa;
+    return v;
   }
   reset() {
     this.t = 0;
@@ -43,6 +59,11 @@ export class SensorSuite {
     this.nextPos = 0;
     this.posMeas = null;
     this.depthHealthy = true;
+    this.pressureMeas = NaN; // Pa absolute, external sensor
+    this.pressureTrue = NaN;
+    this.depthOverRange = false;
+    this.internalPressure = 101325;
+    this.leak = false;
   }
 
   // plant: VehiclePlant; dt: firmware loop period
@@ -70,14 +91,29 @@ export class SensorSuite {
     this.accelEf = m3mulv(R, this.accelBody); // specific force in NED
     // --- pressure / depth ---
     const env = this.env;
-    const depthTrue = plant.position[2] + env.surfaceElevation(plant.position[0], plant.position[1]);
+    const pos = plant.position;
+    const depthTrue = pos[2] + env.surfaceElevation(pos[0], pos[1]);
     if (this.t >= this.nextBaro) {
       this.nextBaro = this.t + 1 / Math.max(1, c.depthRate ?? 50);
-      const pressureDelta = env.rho * env.g * Math.max(depthTrue, -0.5); // Pa above surface pressure
-      const alt = -pressureDelta / 9800 / this.specGrav + (c.depthNoise ?? 0) * rng.gauss();
-      this.baroQueue.push({ t: this.t + this.depthDelay, alt });
+      // absolute pressure at the sensor's mounting point
+      const sp = c.depthSensorPos || [0, 0, 0];
+      const Rq = qToMat(plant.quaternion);
+      const sx = pos[0] + Rq[0] * sp[0] + Rq[1] * sp[1] + Rq[2] * sp[2];
+      const sy = pos[1] + Rq[3] * sp[0] + Rq[4] * sp[1] + Rq[5] * sp[2];
+      const sz = pos[2] + Rq[6] * sp[0] + Rq[7] * sp[1] + Rq[8] * sp[2];
+      const pTrue = env.absolutePressureAt(sx, sy, sz);
+      const pm = this.quantize(pTrue + (c.depthNoise ?? 0) * env.rho * env.g * rng.gauss());
+      this.pressureTrue = pTrue;
+      this.depthOverRange = pTrue > this.spec.maxPa;
+      // AP_Baro (BARO_TYPE_WATER): altitude = (ground_pressure - pressure) / 9800 / specific gravity
+      const alt = (this.groundPressure - pm) / 9800 / this.specGrav;
+      this.baroQueue.push({ t: this.t + this.depthDelay, alt, p: pm });
     }
-    while (this.baroQueue.length && this.baroQueue[0].t <= this.t) this.baroAlt = this.baroQueue.shift().alt;
+    while (this.baroQueue.length && this.baroQueue[0].t <= this.t) { const b = this.baroQueue.shift(); this.baroAlt = b.alt; this.pressureMeas = b.p; }
+    // --- enclosure: autopilot barometer and leak detector ---
+    const fl = plant.flood;
+    this.internalPressure = fl ? fl.pIn : env.pAtm;
+    this.leak = !!(fl && plant.m.hull?.leakSensor && fl.volume > 1e-6);
     // --- inertial navigation (vertical, NEU cm) ---
     const azUp = -(this.accelEf[2] + 9.80665); // m/s^2 up
     if (!this.inav) {

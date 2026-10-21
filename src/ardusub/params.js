@@ -7,7 +7,7 @@ const P = [];
 const def = (name, value, o = {}) => P.push({ name, default: value, ...o });
 
 // ---- Frame / motors ----
-def('FRAME_CONFIG', 1, { group: 'Frame', desc: 'Frame configuration (0 BlueROV1, 1 Vectored, 2 Vectored-6DOF, 3 Vectored-6DOF-90, 4 SimpleROV-3, 5 SimpleROV-4, 6 SimpleROV-5, 7 Custom)', values: { 0: 'BlueROV1', 1: 'Vectored', 2: 'Vectored 6DOF', 3: 'Vectored 6DOF 90°', 4: 'SimpleROV-3', 5: 'SimpleROV-4', 6: 'SimpleROV-5', 7: 'Custom' }, reboot: true });
+def('FRAME_CONFIG', 1, { group: 'Frame', desc: 'Frame configuration (motor layout and mixing table)', values: { 0: 'BlueROV1', 1: 'Vectored', 2: 'Vectored 6DOF', 3: 'Vectored 6DOF 90°', 4: 'SimpleROV-3', 5: 'SimpleROV-4', 6: 'SimpleROV-5', 7: 'Custom' }, reboot: true });
 for (let i = 1; i <= 12; i++) def(`MOT_${i}_DIRECTION`, 1, { group: 'Motors', desc: `Motor ${i} normal (1) or reverse (-1)`, values: { 1: 'normal', '-1': 'reverse' } });
 def('MOT_PWM_MIN', 1100, { group: 'Motors', unit: 'µs', min: 800, max: 1500, desc: 'PWM output minimum' });
 def('MOT_PWM_MAX', 1900, { group: 'Motors', unit: 'µs', min: 1500, max: 2200, desc: 'PWM output maximum' });
@@ -128,6 +128,9 @@ for (let i = 1; i <= 8; i++) {
 // ---- Failsafes / misc ----
 def('FS_PILOT_INPUT', 2, { group: 'Failsafe', values: { 0: 'Disabled', 1: 'Warn only', 2: 'Disarm' }, desc: 'Action when pilot input is lost' });
 def('FS_PILOT_TIMEOUT', 3.0, { group: 'Failsafe', unit: 's', desc: 'Pilot input timeout' });
+def('FS_LEAK_ENABLE', 1, { group: 'Failsafe', values: { 0: 'Disabled', 1: 'Warn only', 2: 'Enter surface mode' }, desc: 'Action when the leak detector senses water' });
+def('FS_PRESS_ENABLE', 0, { group: 'Failsafe', values: { 0: 'Disabled', 1: 'Warn only' }, desc: 'Action when the internal (enclosure) pressure exceeds FS_PRESS_MAX' });
+def('FS_PRESS_MAX', 105000, { group: 'Failsafe', unit: 'Pa', min: 0, max: 200000, desc: 'Internal pressure failsafe threshold' });
 def('SURFACE_DEPTH', -10, { group: 'Depth', unit: 'cm', desc: 'Depth reading at which the vehicle counts as surfaced' });
 def('BARO_SPEC_GRAV', 1.0, { group: 'Depth', min: 0.98, max: 1.05, desc: 'Specific gravity used to convert pressure to depth (1.0 fresh, 1.024 sea)' });
 def('INS_GYRO_FILTER', 20, { group: 'Sensors', unit: 'Hz', desc: 'Gyro low-pass filter' });
