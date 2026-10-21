@@ -45,11 +45,13 @@ const body = `<title>DUBURI Simulator</title>
 <noscript><p style="padding:24px;color:#e3eef3">The DUBURI simulator needs JavaScript and WebGL2.</p></noscript>
 <script>${js}</script>
 `;
+const favicon = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#06131b"/><text x="16" y="23" font-family="Arial,sans-serif" font-weight="700" font-size="19" text-anchor="middle" fill="#ffb547">D</text></svg>');
 const full = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="${favicon}">
 </head>
 <body>
 ${body}</body>
