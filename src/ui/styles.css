@@ -240,3 +240,21 @@ details.more summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs
   .chip.hide-sm { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* Frame panel: frame cards, two-view thruster drawing, command sliders */
+.frame-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.frame-card { display: flex; flex-direction: column; gap: 6px; padding: 10px; min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--glass-2); color: var(--ink); text-align: left; cursor: pointer; font: inherit; transition: border-color 0.15s, background 0.15s; }
+.frame-card:hover { border-color: var(--line-2); background: var(--glass-hi); }
+.frame-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.frame-card.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.frame-card .t { font-weight: 600; font-size: var(--fs-sm); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frame-card .s { color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.35; }
+.frame-card svg { width: 100%; height: auto; display: block; }
+.frame-views { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.frame-view-wrap { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; background: var(--chart-bg); min-width: 0; }
+.frame-view { touch-action: none; user-select: none; }
+.frame-view .thr { cursor: grab; outline: none; }
+.frame-view .thr:active { cursor: grabbing; }
+.frame-view .thr:hover .body, .frame-view .thr:focus-visible .body { stroke: var(--accent); stroke-width: 2.5; }
+.axis-sliders { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) 3.5em; gap: 8px 10px; align-items: center; }
+.axis-sliders input[type=range] { width: 100%; accent-color: var(--accent); }

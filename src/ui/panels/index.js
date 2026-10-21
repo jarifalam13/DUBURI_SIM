@@ -1,6 +1,7 @@
 // Setup rail order: build the vehicle, check what it can do, fly and tune.
 import vehicle from './vehicle.js';
 import thrusters from './thrusters.js';
+import frame from './frame.js';
 import mixer from './mixer.js';
 import hydro from './hydro.js';
 import cfd from './cfd.js';
@@ -14,4 +15,4 @@ import team from './team.js';
 import help from './help.js';
 import autotune from './autotune.js';
 
-export const PANELS = [vehicle, thrusters, mixer, hydro, cfd, env, params, joystick, motors, tuning, logs, team, help, autotune];
+export const PANELS = [vehicle, thrusters, frame, mixer, hydro, cfd, env, params, joystick, motors, tuning, logs, team, help, autotune];

@@ -14,7 +14,11 @@ before the first pool session. Everything runs in one HTML file in the browser.
 | | |
 |---|---|
 | **Your design** | Upload STL (binary/ASCII), OBJ or PLY — top-bar *Upload design* or drop the file anywhere. Pick units and which axis is forward/up; the hull is voxelised for volume, centre of buoyancy, inertia, projected areas and contact points. |
+| **Frame** | Picture cards for every ArduSub `FRAME_CONFIG` and the automatic mixer, a top and side drawing of your thrusters, and command sliders that light up the thrusters that fire and show the force/torque that results — or fly the vehicle with them. |
+| **Custom frame builder** | Add up to 12 thrusters (T200 / T500 / generic / your measured table), drag them on the top and side drawings (5 mm steps), set direction (presets, ±45° rotate, flip), mirror, remove, reverse `MOT_n_DIRECTION`, start from any built-in layout, and copy the resulting mixer as `add_motor_raw_6dof()` lines for a custom ArduSub build. |
+| **Body shape without CAD** | Simple open-frame, closed-box or torpedo bodies with your dimensions and a duct at every thruster — or your STL/OBJ/PLY, or the sample ROV. |
 | **Thruster layout → DOF** | Place thrusters on the model (click the hull). The allocator finds the largest set of independently controllable axes — full 6-DOF when the layout allows it, otherwise the maximum possible — and reports authority and cross-coupling per axis. Or fly the exact ArduSub `FRAME_CONFIG` table. |
+| **Your parameter file** | Every line is loaded: parameters that change the simulated flight use your values, the rest (calibration, EKF, serial, servo outputs, …) are kept unchanged and written back on export. The leak detector follows `LEAKn_PIN`/`LEAKn_TYPE`. |
 | **ArduSub 4.5.7 port** | `AP_Motors6DOF` mixers and saturation, `AC_AttitudeControl_Sub` (quaternion controller, input shaping, rate PIDs), `AC_PosControl` depth controller, position hold, `joystick.cpp` pilot mapping and `BTNn_FUNCTION`s, spool-up, arming checks, surface/bottom detection, pilot-input, leak (`FS_LEAK_ENABLE`) and internal-pressure (`FS_PRESS_*`) failsafes. Real parameter names; `.param` import/export (Mission Planner and QGC formats). |
 | **Fly** | Keyboard or gamepad (Gamepad API, QGC button numbering), Cockpit/QGC-style HUD, chase/orbit/camera/top views, live target-vs-actual graphs, CSV logs. |
 | **Pool & water** | Any length, width and depth — test tank to open sea — with a flat floor or a shallow end and slope; wall height; presets; fresh or sea water; current, turbulence and linear waves. |
@@ -30,14 +34,14 @@ before the first pool session. Everything runs in one HTML file in the browser.
 1. **Upload design** (top bar). Set units and axes in *Vehicle*.
 2. Enter what you know: real mass and CG, thruster positions/directions/polarity, measured thrust tables if you have them.
 3. **Pool & water**: your pool size and depth, water type, housing depth rating.
-4. **Frame & mixer**: see which axes your layout controls.
+4. **Frame**: pick the frame and try each axis with the sliders (details in *Frame & mixer*).
 5. **AUTO-TUNE** → review → *Apply selected*.
 6. Fly: `Enter` arms, `1`–`6` change mode, `G` shows graphs. Gamepad works in Chrome/Edge.
 7. *Save .param* and load it on the Pixhawk with QGroundControl or Mission Planner.
 
 ## Validation
 
-All numbers below are reproducible with the tools in `tools/` and the tests in `tests/` (63 automated tests, `npm test`).
+All numbers below are reproducible with the tools in `tools/` and the tests in `tests/` (69 automated tests, `npm test`).
 
 | Check | Result |
 |---|---|
@@ -47,6 +51,7 @@ All numbers below are reproducible with the tools in `tools/` and the tests in `
 | Panel method vs exact ellipsoid (Lamb) at 3 380 panels | +0.5 … +1.9 % |
 | WebAssembly kernels vs JavaScript | BEM ≤ 2 × 10⁻⁵ relative, LBM ≤ 10⁻⁶; BEM 3.3× faster |
 | EOS-80 seawater density and bulk modulus | all 14 UNESCO check values to < 0.01 ppm |
+| Displaced volume (exact along rays, fine across) | thin 12.7 mm plates within 0.04 % (plain voxels: +31 %); slanted rod −0.04 %; sphere and box exact |
 | Firmware port | mixer maths, RC scaling, sqrt controller, spool logic, button mapping and failsafes checked against the ArduSub source behaviour |
 
 ## Limits — read before trusting a number
@@ -62,7 +67,7 @@ All numbers below are reproducible with the tools in `tools/` and the tests in `
 
 ```bash
 npm install
-npm test               # 63 unit tests (physics, firmware, allocation, BEM, CFD, WASM, pressure)
+npm test               # 69 unit tests (physics, firmware, allocation, BEM, CFD, WASM, pressure, shapes)
 npm run build          # -> dist/duburi-sim.html (stand-alone), dist/artifact.html, docs/index.html (GitHub Pages)
 npm run build:wasm     # recompile src/wasm/kernels.c (needs clang with wasm32)
 npm run validate:cfd   # sphere drag through the full CFD pipeline

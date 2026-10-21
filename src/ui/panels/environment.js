@@ -6,7 +6,7 @@
 import { h, numberField, selectField, vec3Field, seg, checkbox, fmt, fmtSigned, toast } from '../dom.js';
 import { waterDensity, kinematicViscosity, airPressureAtAltitude } from '../../hydro/water.js';
 import { DEFAULT_POOL, floorProfile } from '../../physics/environment.js';
-import { DEFAULT_HULL, DEPTH_SENSORS, depthSensorSpec } from '../../vehicle/config.js';
+import { DEFAULT_HULL, DEPTH_SENSORS, depthSensorSpec, leakDetectorFromParams } from '../../vehicle/config.js';
 
 export const POOL_PRESETS = [
   ['tank', 'Test tank · 4 × 3 m, 1.5 m deep', { length: 4, width: 3, depth: 1.5, floor: 'flat', freeboard: 0.3, style: 'tiles' }],
@@ -152,6 +152,13 @@ export default {
         h('span', { class: 'pill muted' }, `Inside ${fmt(f.pIn / 100, 1)} hPa`),
         h('span', { class: 'pill muted' }, `${fmt(air, 2)} L of air`));
     };
+    const allP = { ...(cfg.extraParams || {}), ...cfg.params };
+    const fileDet = leakDetectorFromParams(allP);
+    const pinTxt = `LEAK1_PIN = ${allP.LEAK1_PIN ?? '—'}, LEAK1_TYPE = ${allP.LEAK1_TYPE ?? '—'}`;
+    const leakNote = fileDet === null ? null : h('p', { class: 'note', style: fileDet === HU.leakSensor ? {} : { color: 'var(--warning)' } },
+      fileDet ? `Your parameters configure a leak detector (${pinTxt}).`
+        : HU.leakSensor ? `Simulating a detector, but your parameters configure none (${pinTxt}): on the real vehicle ArduSub would not see this leak.`
+          : `Your parameters configure no leak detector (${pinTxt}), so ArduSub cannot see a leak. Tick to simulate one anyway.`);
     el.append(h('div', { class: 'section' }, h('h3', {}, 'Pressure housings (your vehicle)'),
       h('div', { class: 'grid2' },
         numberField({ label: 'Rated depth', unit: 'm', step: 5, min: 0, max: 11000, get: () => HU.depthRating, set: (v) => { HU.depthRating = v; live(); }, hint: 'Depth rating of the weakest enclosure (0 = no limit)' }),
@@ -159,7 +166,8 @@ export default {
         numberField({ label: 'Air inside housings', unit: 'L', step: 0.1, min: 0, max: 5000, get: () => HU.airVolume, set: (v) => { HU.airVolume = v; live(); }, hint: '0 = estimate as 20% of the displaced volume' }),
         numberField({ label: 'Leak hole size', unit: 'mm²', step: 0.5, min: 0, max: 5000, get: () => HU.leakArea, set: (v) => { HU.leakArea = v; live(); }, hint: 'Effective hole area once a housing leaks; water flows in at 0.62 × area × √(2 Δp / ρ)' })),
       checkbox('Housings start to leak below the rated depth', () => HU.floodOverRating, (v) => { HU.floodOverRating = v; live(); }),
-      checkbox(`Leak detector fitted (FS_LEAK_ENABLE = ${cfg.params.FS_LEAK_ENABLE ?? 1}: ${['disabled', 'warn only', 'surface'][cfg.params.FS_LEAK_ENABLE ?? 1] ?? '?'})`, () => HU.leakSensor, (v) => { HU.leakSensor = v; live(); }),
+      checkbox(`Leak detector fitted (FS_LEAK_ENABLE = ${cfg.params.FS_LEAK_ENABLE ?? 1}: ${['disabled', 'warn only', 'surface'][cfg.params.FS_LEAK_ENABLE ?? 1] ?? '?'})`, () => HU.leakSensor, (v) => { HU.leakSensor = v; HU.leakSensorSource = 'user'; live(); app.refreshPanel(); }),
+      leakNote,
       hullStatus,
       h('div', { class: 'row' },
         h('button', { class: 'btn', onclick: () => { app.sim.plant.startLeak('manual'); toast('Leak started at the current depth', 'bad'); showHull(); } }, 'Start a leak now'),

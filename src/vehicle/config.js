@@ -6,6 +6,7 @@ import { heavyLayout } from '../alloc/frames.js';
 import { defaultParams } from '../ardusub/params.js';
 import { THRUSTER_PRESETS } from '../physics/thruster.js';
 import { DEFAULT_ENVIRONMENT } from '../physics/environment.js';
+import { DEFAULT_SHAPE } from './shapes.js';
 
 export const CONFIG_SCHEMA = 'duburi.vehicle';
 
@@ -71,7 +72,7 @@ export function defaultConfig() {
     schema: CONFIG_SCHEMA,
     version: CONFIG_VERSION,
     name: 'DUBURI sample ROV',
-    model: { source: 'sample', units: 'mm', forward: '+X', up: '+Z', origin: 'bbox', offset: [0, 0, 0], color: '#dfe6ea', sealedHull: false, fileName: null },
+    model: { source: 'sample', units: 'mm', forward: '+X', up: '+Z', origin: 'bbox', offset: [0, 0, 0], color: '#dfe6ea', sealedHull: false, fileName: null, shape: { ...DEFAULT_SHAPE } },
     mass: { mass: 13.5, source: 'estimate', cgMode: 'cb-offset', cgOffset: [0, 0, 0.025], cg: [0, 0, 0], inertia: { mode: 'auto', Ixx: 0.3, Iyy: 0.4, Izz: 0.45, Pxy: 0, Pxz: 0, Pyz: 0 } },
     buoyancy: { mode: 'auto', volume: 0.0135, cb: [0, 0, 0] },
     hydro: {
@@ -114,7 +115,24 @@ export function normalizeConfig(cfg) {
     return b === undefined ? a : b;
   };
   const out = merge(d, cfg);
-  out.params = { ...defaultParams(), ...(cfg.params || {}) };
+  const known = defaultParams();
+  const params = { ...known, ...(cfg.params || {}) };
+  const extra = { ...(cfg.extraParams || {}) };
+  // Parameters the simulator started to simulate after this vehicle was saved:
+  // the value from the user's file (kept in extraParams) wins over the new default.
+  for (const k of Object.keys(extra)) {
+    if (!(k in known)) continue;
+    const saved = !!cfg.params && k in cfg.params;
+    if (!saved || (params[k] === known[k] && extra[k] !== known[k])) params[k] = extra[k];
+    delete extra[k];
+  }
+  out.params = params;
+  out.extraParams = extra;
+  out.hull = { ...DEFAULT_HULL, ...(out.hull || {}) };
+  if (!out.hull.leakSensorSource) {
+    const det = leakDetectorFromParams({ ...extra, ...params });
+    if (det !== null) { out.hull.leakSensor = det; out.hull.leakSensorSource = 'params'; }
+  }
   out.thrusters = (cfg.thrusters || d.thrusters).map((t) => ({ ...thrusterFromPreset(t, t.preset || 't200-16v'), ...t }));
   out.version = CONFIG_VERSION;
   out.schema = CONFIG_SCHEMA;
@@ -126,10 +144,14 @@ export function normalizeConfig(cfg) {
 export function applyParamFile(cfg, parsed, { syncPolarity = true } = {}) {
   const known = defaultParams();
   const report = { applied: 0, kept: 0, polarityChanged: [] };
+  cfg.extraParams = cfg.extraParams || {};
   for (const [k, v] of Object.entries(parsed)) {
-    if (k in known) { cfg.params[k] = v; report.applied++; }
+    if (k in known) { cfg.params[k] = v; delete cfg.extraParams[k]; report.applied++; }
     else { cfg.extraParams[k] = v; report.kept++; }
   }
+  // the leak detector the file configures (LEAKn_PIN / LEAKn_TYPE)
+  const det = leakDetectorFromParams(parsed);
+  if (det !== null) { cfg.hull = { ...DEFAULT_HULL, ...(cfg.hull || {}), leakSensor: det, leakSensorSource: 'params' }; report.leakDetector = det; }
   if (syncPolarity) {
     // Assume the real vehicle flies correctly: a reversed MOT_n_DIRECTION means
     // that thruster's prop/ESC pushes the other way on the hardware.
@@ -140,6 +162,20 @@ export function applyParamFile(cfg, parsed, { syncPolarity = true } = {}) {
     });
   }
   return report;
+}
+
+// ArduSub 4.5 leak detectors: LEAKn_PIN >= 0 with LEAKn_TYPE 0 (digital) or 1 (analog).
+// Returns true / false when the parameters say, null when they don't mention it.
+export function leakDetectorFromParams(all) {
+  let seen = false;
+  for (let i = 1; i <= 3; i++) {
+    const pin = all[`LEAK${i}_PIN`];
+    if (pin === undefined) continue;
+    seen = true;
+    const type = all[`LEAK${i}_TYPE`];
+    if (pin >= 0 && (type === undefined || type >= 0)) return true;
+  }
+  return seen ? false : null;
 }
 
 export function allParamsForExport(cfg) {

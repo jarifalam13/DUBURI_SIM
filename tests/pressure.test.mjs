@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { box } from '../src/geometry/primitives.js';
 import { analyzeGeometry } from '../src/geometry/analyze.js';
 import { sampleGeometry } from '../src/vehicle/sample.js';
-import { defaultConfig, thrusterFromPreset, applyParamFile } from '../src/vehicle/config.js';
+import { defaultConfig, thrusterFromPreset, applyParamFile, normalizeConfig, allParamsForExport } from '../src/vehicle/config.js';
 import { parseParamFile } from '../src/ardusub/params.js';
 import { buildPlantModel } from '../src/vehicle/model.js';
 import { Environment, floorProfile } from '../src/physics/environment.js';
@@ -165,7 +165,8 @@ test('depth sensor: AP_Baro water formula, specific gravity and range limit', ()
 });
 
 test('ArduSub leak failsafe: warn after 20 s, SURFACE mode with FS_LEAK_ENABLE 2', () => {
-  const sim = makeSim((c) => { c.params.FS_LEAK_ENABLE = 2; c.start = { position: [0, 0, 2], yaw: 0 }; });
+  // the DUBURI file has no leak detector (LEAK1_PIN -1): fit one for this test
+  const sim = makeSim((c) => { c.params.FS_LEAK_ENABLE = 2; c.hull.leakSensor = true; c.hull.leakSensorSource = 'user'; c.start = { position: [0, 0, 2], yaw: 0 }; });
   sim.fw.setMode(MODE.ALT_HOLD);
   sim.runFor(0.5);
   assert.ok(sim.fw.arm());
@@ -199,4 +200,37 @@ test('shrinking the pool keeps the vehicle and its start position inside', () =>
   assert.ok(Math.abs(p[0]) <= 2 - r + 1e-9 && Math.abs(p[1]) <= 1.5 - r + 1e-9 && p[2] <= 1.5 - r + 1e-9, `${p}`);
   const k = sim.keepInPool(sim.cfg.start.position);
   assert.ok(k.moved && Math.abs(k.p[0]) <= 2 - r + 1e-9);
+});
+
+test('the leak detector follows LEAKn_PIN / LEAKn_TYPE from the parameter file', () => {
+  const cfg = defaultConfig();
+  applyParamFile(cfg, duburi, { syncPolarity: true });
+  assert.equal(cfg.hull.leakSensor, false, 'DUBURI file: LEAK1_PIN -1, no detector');
+  const sim = makeSim((c) => { c.start = { position: [0, 0, 2], yaw: 0 }; });
+  sim.plant.startLeak('test');
+  sim.runFor(2);
+  assert.ok(sim.plant.flood.volume > 0 && !sim.sensors.leak, 'water comes in but nothing detects it');
+  const wired = defaultConfig();
+  applyParamFile(wired, { LEAK1_PIN: 27, LEAK1_TYPE: 0 });
+  assert.equal(wired.hull.leakSensor, true);
+});
+
+test('values from the file survive when the simulator starts simulating a parameter', () => {
+  // a vehicle saved before FS_LEAK_ENABLE was simulated: the file's 0 sat in extraParams
+  const old = { schema: 'duburi.vehicle', params: { FRAME_CONFIG: 2 }, extraParams: { FS_LEAK_ENABLE: 0, COMPASS_OFS_X: 306.1 } };
+  const a = normalizeConfig(JSON.parse(JSON.stringify(old)));
+  assert.equal(a.params.FS_LEAK_ENABLE, 0);
+  assert.ok(!('FS_LEAK_ENABLE' in a.extraParams) && a.extraParams.COMPASS_OFS_X === 306.1);
+  assert.equal(allParamsForExport(a).FS_LEAK_ENABLE, 0);
+  // saved again after the update with the new default persisted: the file value still wins
+  const b = normalizeConfig({ ...old, params: { FRAME_CONFIG: 2, FS_LEAK_ENABLE: 1 } });
+  assert.equal(b.params.FS_LEAK_ENABLE, 0);
+  // a value the user changed in the simulator wins over the stale copy
+  const c = normalizeConfig({ ...old, params: { FRAME_CONFIG: 2, FS_LEAK_ENABLE: 2 } });
+  assert.equal(c.params.FS_LEAK_ENABLE, 2);
+  // every parameter of the 943-line DUBURI file is either simulated or kept, none lost
+  const d = defaultConfig();
+  applyParamFile(d, duburi);
+  const exp = allParamsForExport(d);
+  for (const [k, v] of Object.entries(duburi)) assert.equal(exp[k], v, k);
 });

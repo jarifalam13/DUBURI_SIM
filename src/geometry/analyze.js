@@ -1,7 +1,7 @@
 // One-shot geometry analysis of a hull (already in the vehicle frame, metres).
 // Heavy for big STLs, so the browser runs it in a worker.
 
-import { bbox, topology, signedVolume, makeGrid, voxelizeSolid, voxelizeSurface, massProps, projections, buoyancyElements, contactPoints, union, fillEnclosed } from './mesh.js';
+import { bbox, topology, signedVolume, makeGrid, voxelizeSolid, voxelizeSurface, massProps, projections, buoyancyElements, contactPoints, union, fillEnclosed, rayVolume } from './mesh.js';
 
 export function chooseCell(bb, targetCells = 56, minCell = 0.003) {
   const L = Math.max(...bb.size);
@@ -33,8 +33,22 @@ export function analyzeGeometry(positions, opts = {}) {
   const sealed = opts.sealedHull ? massProps(fillEnclosed(wet)) : null;
   onProgress(0.75, 'Projected areas');
   const proj = projections(wet, mp.centroid);
+  onProgress(0.8, 'Integrating the displaced volume');
+  // exact-along-ray volume: no voxel staircase on thin plates and small parts
+  let ray = null;
+  if (!sealed && volumeSource === 'voxel' && opts.rayVolume !== false) {
+    const rv = rayVolume(positions, bb, cell, { sub: opts.raySub ?? 6 });
+    if (rv.volume > 0 && rv.openFraction < 0.02 && Math.abs(rv.volume / mp.volume - 1) < 0.6) ray = rv;
+  }
   onProgress(0.85, 'Buoyancy elements');
-  const els = buoyancyElements(volumeSource === 'voxel' ? solid : wet, opts.buoyancyResolution ?? 14);
+  let els = buoyancyElements(volumeSource === 'voxel' ? solid : wet, opts.buoyancyResolution ?? 14);
+  if (ray) {
+    // keep the voxel distribution, match the integrated volume and centre of buoyancy
+    const sv0 = els.reduce((t, e) => t + e.v, 0);
+    const c0 = [0, 1, 2].map((k) => els.reduce((t, e) => t + e.p[k] * e.v, 0) / sv0);
+    const k = ray.volume / sv0, d = [0, 1, 2].map((q) => ray.centroid[q] - c0[q]);
+    els = els.map((e) => ({ p: [e.p[0] + d[0], e.p[1] + d[1], e.p[2] + d[2]], v: e.v * k, h: e.h }));
+  }
   const contacts = contactPoints(wet);
   onProgress(1, 'Done');
   return {
@@ -45,11 +59,12 @@ export function analyzeGeometry(positions, opts = {}) {
     cell,
     gridDims: [solid.nx, solid.ny, solid.nz],
     openRayFraction: vs.openRayFraction,
-    volume: sealed ? sealed.volume : mp.volume,
-    centroid: sealed ? sealed.centroid : mp.centroid,
+    volume: sealed ? sealed.volume : ray ? ray.volume : mp.volume,
+    centroid: sealed ? sealed.centroid : ray ? ray.centroid : mp.centroid,
+    voxelVolume: mp.volume,
     inertiaUnit: mp.inertiaUnit,
     solidCentroid: mp.centroid,
-    volumeSource: sealed ? 'sealed-hull' : volumeSource,
+    volumeSource: sealed ? 'sealed-hull' : ray ? 'ray' : volumeSource,
     projections: proj,
     buoyEls: els,
     contacts,

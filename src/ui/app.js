@@ -17,6 +17,7 @@ import { parseSTL, writeBinarySTL } from '../geometry/stl.js';
 import { parseMesh, DESIGN_ACCEPT, DESIGN_EXTENSIONS } from '../geometry/formats.js';
 import { makeModelTransform, transformPositions, bbox, guessUnits } from '../geometry/mesh.js';
 import { cgOf } from '../vehicle/model.js';
+import { shapeGeometry, DEFAULT_SHAPE } from '../vehicle/shapes.js';
 import { waterDensity } from '../hydro/water.js';
 import DUBURI_PARAMS from '../../profiles/duburi_pixhawk_param.param';
 
@@ -249,8 +250,30 @@ export class App {
       pos = transformPositions(pos, { R: [1, 0, 0, 0, 1, 0, 0, 0, 1], s: 1 }, [t[0] + off[0], t[1] + off[1], t[2] + off[2]]);
       return { positions: pos, parts: [{ name: 'Hull', color: m.color, positions: pos }] };
     }
+    if (m.source === 'shape') {
+      const g = shapeGeometry(m.shape || DEFAULT_SHAPE, this.cfg.thrusters);
+      return { positions: g.positions, parts: g.parts };
+    }
     const s = sampleGeometry();
     return { positions: s.positions, parts: s.parts };
+  }
+
+  // thruster layout fingerprint: a simple-shape body has a duct at every thruster
+  thrusterSig() { return JSON.stringify(this.cfg.thrusters.map((t) => [t.pos, t.axis, t.enabled, t.propDiameter])); }
+
+  // switch the body between the uploaded design, a simple shape and the sample
+  async setModelSource(source) {
+    const m = this.cfg.model;
+    if (source === 'stl' && !this.stlRaw) {
+      const buf = await idbGet(`stl:${this.team.id}`);
+      if (buf) { try { this.stlRaw = parseSTL(buf); } catch { this.stlRaw = null; } }
+      if (!this.stlRaw) { toast('No design is stored in this browser yet: upload your STL, OBJ or PLY.', 'bad', 5000); return false; }
+    }
+    if (source === 'shape') m.shape = { ...DEFAULT_SHAPE, ...(m.shape || {}) };
+    m.source = source;
+    if (this.cfg.mass.source !== 'user') this.cfg.mass.mass = 0; // neutral mass is re-estimated for the new body
+    await this.updateGeometry({ resetVehicle: true });
+    return true;
   }
 
   async updateGeometry({ resetVehicle = false } = {}) {
@@ -268,12 +291,14 @@ export class App {
     }
     this.busy(null);
     this.geo = geo;
-    if (this.firstRun || !(this.cfg.mass.mass > 0)) {
+    // an estimated mass stays neutral for whatever body is loaded; a mass you entered is never changed
+    if (this.firstRun || !(this.cfg.mass.mass > 0) || this.cfg.mass.source === 'estimate') {
       this.cfg.mass.mass = +(waterDensity(this.cfg.environment.temperature, this.cfg.environment.salinity) * geo.volume * 0.985).toFixed(3);
       this.cfg.mass.source = 'estimate';
       this.firstRun = false;
     }
     this.parts = parts;
+    this.shapeSig = this.cfg.model.source === 'shape' ? this.thrusterSig() : null;
     this.scene.buildPool(this.cfg.environment.pool);
     this.scene.setVehicleGeometry(parts, this.cfg.model.color);
     this.buildSim(resetVehicle);
@@ -305,6 +330,11 @@ export class App {
   // config changed: rebuild the model (keeps the vehicle where it is)
   changed({ geometry = false, immediate = false } = {}) {
     this.scheduleSave();
+    // a simple-shape body follows its thrusters (ducts are part of the body)
+    if (!geometry && this.cfg.model.source === 'shape' && this.thrusterSig() !== this.shapeSig) {
+      clearTimeout(this.shapeTimer);
+      this.shapeTimer = setTimeout(() => this.updateGeometry({ resetVehicle: false }), 450);
+    }
     if (geometry) { this.updateGeometry({ resetVehicle: true }); return; }
     clearTimeout(this.rebuildTimer);
     const run = () => { this.buildSim(false); this.activePanel?.onModelChanged?.(); this.dock?.reset?.(); };
@@ -324,6 +354,7 @@ export class App {
   // live parameter change (firmware only, no rebuild)
   setParam(name, value) {
     this.cfg.params[name] = value;
+    if (this.cfg.extraParams && name in this.cfg.extraParams) delete this.cfg.extraParams[name];
     const structural = /^(FRAME_CONFIG|SCHED_LOOP_RATE|INS_|AHRS_TRIM|BARO_SPEC|EK3_)/.test(name) || /^MOT_\d+_DIRECTION$/.test(name);
     if (structural) this.changed({ immediate: true });
     else { this.sim.fw.applyParams({ [name]: value }); this.sim.cfg.params[name] = value; this.scheduleSave(); }
@@ -420,7 +451,8 @@ export class App {
     this.frame++;
     if (this.sim && !this.simError) {
       try {
-        const msg = this.input.sample(dt, this.cfg);
+        // a panel can drive the vehicle (Frame > Try it); otherwise keyboard / gamepad
+        const msg = this.pilotOverride ? this.pilotOverride.msg : this.input.sample(dt, this.cfg);
         this.sim.setPilotInput(msg);
         const t0 = performance.now();
         this.sim.advance(dt);

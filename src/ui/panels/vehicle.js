@@ -5,6 +5,7 @@ import { h, numberField, selectField, vec3Field, seg, checkbox, fmt, toast, conf
 import { AXIS_NAMES, UNIT_SCALES } from '../../geometry/mesh.js';
 import { inertiaTensor, cgOf } from '../../vehicle/model.js';
 import { DESIGN_ACCEPT } from '../../geometry/formats.js';
+import { shapeEditor } from '../shapeEditor.js';
 
 export default {
   id: 'vehicle', title: 'Vehicle', short: 'Vehicle', icon: 'hull', sub: 'Hull geometry, mass, centre of gravity and buoyancy',
@@ -31,8 +32,9 @@ export default {
     const topo = geo.topology;
     const modelSec = h('div', { class: 'section' }, h('h3', {}, 'Hull model'),
       h('div', { class: 'row', style: { justifyContent: 'space-between' } },
-        h('div', {}, h('b', {}, isSTL ? m.fileName || 'STL file' : 'Sample ROV (8 thrusters, vectored 6-DOF)'), h('div', { class: 'note' }, `${topo.triangles.toLocaleString()} triangles · ${fmt(geo.bbox.size[0], 3)} × ${fmt(geo.bbox.size[1], 3)} × ${fmt(geo.bbox.size[2], 3)} m (L × W × H)`)),
-        isSTL ? h('button', { class: 'btn', onclick: async () => { if (await confirmDialog('Use the sample vehicle?', 'Your STL stays saved in this browser; you can load it again any time.', { ok: 'Use sample' })) { cfg.model.source = 'sample'; app.firstRun = true; await app.updateGeometry({ resetVehicle: true }); app.refreshPanel(); } } }, 'Use sample') : null),
+        h('div', {}, h('b', {}, isSTL ? m.fileName || 'STL file' : m.source === 'shape' ? 'Simple shape (built in the simulator)' : 'Sample ROV (8 thrusters, vectored 6-DOF)'), h('div', { class: 'note' }, `${topo.triangles.toLocaleString()} triangles · ${fmt(geo.bbox.size[0], 3)} × ${fmt(geo.bbox.size[1], 3)} × ${fmt(geo.bbox.size[2], 3)} m (L × W × H)`))),
+      h('div', { class: 'field' }, h('span', {}, 'Body'), seg([['stl', 'My design (STL)'], ['shape', 'Simple shape'], ['sample', 'Sample ROV']], isSTL || m.source === 'shape' ? m.source : 'sample', async (v) => { if (v === m.source) return; await app.setModelSource(v); app.refreshPanel(); })),
+      m.source === 'shape' ? shapeEditor(app) : null,
       drop, fileIn);
     if (isSTL) {
       const g = h('div', { class: 'grid2' },
@@ -51,7 +53,7 @@ export default {
     modelSec.append(h('div', { class: 'card' },
       h('div', { class: 'row', style: { justifyContent: 'space-between' } }, h('b', {}, 'Mesh check'), meshPill),
       h('dl', { class: 'kv' },
-        h('dt', {}, 'Displaced volume (voxels)'), h('dd', {}, `${fmt(geo.volume * 1000, 2)} L`),
+        h('dt', {}, `Displaced volume (${geo.volumeSource === 'ray' ? 'integrated along rays' : geo.volumeSource === 'sealed-hull' ? 'sealed hull' : 'voxels'})`), h('dd', {}, `${fmt(geo.volume * 1000, 2)} L`),
         h('dt', {}, 'Volume from mesh surface'), h('dd', {}, Number.isFinite(geo.meshVolume) && Math.abs(geo.meshVolume) > 1e-9 ? `${fmt(Math.abs(geo.meshVolume) * 1000, 2)} L` : '—'),
         h('dt', {}, 'Voxel size'), h('dd', {}, `${fmt(geo.cell * 1000, 1)} mm`),
         h('dt', {}, 'Centre of buoyancy (x, y, z)'), h('dd', {}, geo.centroid.map((v) => fmt(v, 3)).join(', ') + ' m')),

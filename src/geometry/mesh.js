@@ -426,6 +426,91 @@ export function projections(grid, ref = [0, 0, 0]) {
 
 // Coarse buoyancy elements: groups of fine cells, each with volume, centroid and
 // half-extent, used for surface-aware buoyancy at run time.
+// Displaced volume and its centroid by exact integration along rays. Along a
+// ray the inside length is exact (from the mesh crossings); across, the rays
+// sit on a fine grid (cell / sub), so thin plates and small parts no longer
+// depend on how they line up with the voxel grid. Done along x, y and z; each
+// axis is weighted by how little surface runs parallel to its rays, because
+// that is where the across-ray (midpoint rule) error comes from. Overlapping
+// closed parts count once (winding number > 0).
+export function rayVolume(positions, bb, cell, { sub = 6 } = {}) {
+  const triCount = positions.length / 9;
+  const par = [0, 0, 0];
+  for (let t = 0; t < triCount; t++) {
+    const p = t * 9;
+    const ux = positions[p + 3] - positions[p], uy = positions[p + 4] - positions[p + 1], uz = positions[p + 5] - positions[p + 2];
+    const vx = positions[p + 6] - positions[p], vy = positions[p + 7] - positions[p + 1], vz = positions[p + 8] - positions[p + 2];
+    const n = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+    const len = Math.hypot(n[0], n[1], n[2]);
+    if (!len) continue;
+    for (let a = 0; a < 3; a++) { const na = n[a] / len; par[a] += (len / 2) * Math.sqrt(Math.max(0, 1 - na * na)); }
+  }
+  const h = cell / sub;
+  const out = [];
+  let rays = 0, open = 0;
+  for (let a = 0; a < 3; a++) {
+    const b = (a + 1) % 3, c = (a + 2) % 3;
+    // different sub-pixel offsets per axis keep the three estimates independent
+    const ob = bb.min[b] - h + h * ((0.381966 + 0.29 * a) % 1), oc = bb.min[c] - h + h * ((0.618034 + 0.47 * a) % 1);
+    const nb = Math.ceil((bb.max[b] - ob) / h) + 1, nc = Math.ceil((bb.max[c] - oc) / h) + 1;
+    const bins = new Array(nb * nc);
+    for (let t = 0; t < triCount; t++) {
+      const p = t * 9;
+      const b0 = positions[p + b], b1 = positions[p + 3 + b], b2 = positions[p + 6 + b];
+      const c0 = positions[p + c], c1 = positions[p + 3 + c], c2 = positions[p + 6 + c];
+      const ib0 = Math.max(0, Math.ceil((Math.min(b0, b1, b2) - ob) / h - 0.5)), ib1 = Math.min(nb - 1, Math.floor((Math.max(b0, b1, b2) - ob) / h - 0.5));
+      const ic0 = Math.max(0, Math.ceil((Math.min(c0, c1, c2) - oc) / h - 0.5)), ic1 = Math.min(nc - 1, Math.floor((Math.max(c0, c1, c2) - oc) / h - 0.5));
+      for (let ic = ic0; ic <= ic1; ic++) for (let ib = ib0; ib <= ib1; ib++) { const k = ib + nb * ic; (bins[k] || (bins[k] = [])).push(t); }
+    }
+    let V = 0, Ma = 0, Mb = 0, Mc = 0;
+    const tb = [], sb = [], ord = [];
+    for (let ic = 0; ic < nc; ic++) for (let ib = 0; ib < nb; ib++) {
+      const list = bins[ib + nb * ic];
+      if (!list) continue;
+      const pb = ob + (ib + 0.5) * h, pc = oc + (ic + 0.5) * h;
+      tb.length = 0; sb.length = 0;
+      for (const t of list) {
+        const p = t * 9;
+        const B0 = positions[p + b], B1 = positions[p + 3 + b], B2 = positions[p + 6 + b];
+        const C0 = positions[p + c], C1 = positions[p + 3 + c], C2 = positions[p + 6 + c];
+        const w0 = (B2 - B1) * (pc - C1) - (C2 - C1) * (pb - B1);
+        const w1 = (B0 - B2) * (pc - C2) - (C0 - C2) * (pb - B2);
+        const w2 = (B1 - B0) * (pc - C0) - (C1 - C0) * (pb - B0);
+        const area = w0 + w1 + w2;
+        if (area === 0 || (area > 0 ? (w0 < 0 || w1 < 0 || w2 < 0) : (w0 > 0 || w1 > 0 || w2 > 0))) continue;
+        tb.push((w0 * positions[p + a] + w1 * positions[p + 3 + a] + w2 * positions[p + 6 + a]) / area);
+        sb.push(area < 0 ? 1 : -1);
+      }
+      if (!tb.length) continue;
+      rays++;
+      ord.length = 0;
+      for (let i = 0; i < tb.length; i++) ord.push(i);
+      ord.sort((x, y) => tb[x] - tb[y]);
+      let tot = 0;
+      for (const i of ord) tot += sb[i];
+      const parity = tot !== 0; // an open mesh along this ray: fall back to even-odd
+      if (parity) open++;
+      let w = 0, par2 = 0, start = 0, inside = false;
+      for (const i of ord) {
+        w += sb[i]; par2 ^= 1;
+        const now = parity ? par2 === 1 : w > 0;
+        if (now && !inside) start = tb[i];
+        else if (!now && inside) { const t0 = start, t1 = tb[i], L = t1 - t0; V += L; Ma += (t1 * t1 - t0 * t0) / 2; Mb += pb * L; Mc += pc * L; }
+        inside = now;
+      }
+    }
+    const A = h * h;
+    const M = [0, 0, 0];
+    M[a] = Ma * A; M[b] = Mb * A; M[c] = Mc * A;
+    out.push({ V: V * A, M });
+  }
+  const w = par.map((p) => 1 / (p * p + 1e-12));
+  const W = w[0] + w[1] + w[2];
+  const volume = (w[0] * out[0].V + w[1] * out[1].V + w[2] * out[2].V) / W;
+  const mom = [0, 1, 2].map((k) => (w[0] * out[0].M[k] + w[1] * out[1].M[k] + w[2] * out[2].M[k]) / W);
+  return { volume, centroid: volume > 0 ? mom.map((m) => m / volume) : [0, 0, 0], perAxis: out.map((o) => o.V), weights: w.map((x) => x / W), openFraction: rays ? open / rays : 1 };
+}
+
 export function buoyancyElements(grid, targetLongest = 14) {
   const longest = Math.max(grid.nx, grid.ny, grid.nz);
   const g = Math.max(1, Math.round(longest / targetLongest));
