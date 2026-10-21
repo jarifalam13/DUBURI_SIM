@@ -1,0 +1,18 @@
+{
+  "name": "duburi-rov-sim",
+  "version": "1.0.0",
+  "description": "DUBURI ROV simulator with ArduSub emulation and CFD-derived hydrodynamics",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "build": "node build.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "esbuild": "^0.24.0",
+    "three": "^0.169.0"
+  },
+  "type": "module"
+}
