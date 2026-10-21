@@ -13,7 +13,7 @@ before the first pool session. Everything runs in one HTML file in the browser.
 
 | | |
 |---|---|
-| **Your design** | Upload STL (binary/ASCII), OBJ or PLY — top-bar *Upload design* or drop the file anywhere. Pick units and which axis is forward/up; the hull is voxelised for volume, centre of buoyancy, inertia, projected areas and contact points. |
+| **Your design** | Upload STL (binary/ASCII), OBJ or PLY — top-bar *Upload design* or drop the file anywhere. Pick units and which axis is forward/up; the hull is voxelised for volume, centre of buoyancy, inertia, projected areas and contact points. The thrusters in the file are found automatically — by part name (`T200_3`, `Thruster 5` in OBJ groups or ASCII STL solids) or by duct shape (T200 / T500 / generic) — matched to your `FRAME_CONFIG` for motor order and push direction, and proposed as a custom frame (Accept, Flip, Discard). |
 | **Frame** | Picture cards for every ArduSub `FRAME_CONFIG` and the automatic mixer, a top and side drawing of your thrusters, and command sliders that light up the thrusters that fire and show the force/torque that results — or fly the vehicle with them. |
 | **Custom frame builder** | Add up to 12 thrusters (T200 / T500 / generic / your measured table), drag them on the top and side drawings (5 mm steps), set direction (presets, ±45° rotate, flip), mirror, remove, reverse `MOT_n_DIRECTION`, start from any built-in layout, and copy the resulting mixer as `add_motor_raw_6dof()` lines for a custom ArduSub build. |
 | **Body shape without CAD** | Simple open-frame, closed-box or torpedo bodies with your dimensions and a duct at every thruster — or your STL/OBJ/PLY, or the sample ROV. |
@@ -41,7 +41,7 @@ before the first pool session. Everything runs in one HTML file in the browser.
 
 ## Validation
 
-All numbers below are reproducible with the tools in `tools/` and the tests in `tests/` (69 automated tests, `npm test`).
+All numbers below are reproducible with the tools in `tools/` and the tests in `tests/` (79 automated tests, `npm test`).
 
 | Check | Result |
 |---|---|
@@ -67,7 +67,7 @@ All numbers below are reproducible with the tools in `tools/` and the tests in `
 
 ```bash
 npm install
-npm test               # 69 unit tests (physics, firmware, allocation, BEM, CFD, WASM, pressure, shapes)
+npm test               # 79 unit tests (physics, firmware, allocation, BEM, CFD, WASM, pressure, shapes, thruster detection)
 npm run build          # -> dist/duburi-sim.html (stand-alone), dist/artifact.html, docs/index.html (GitHub Pages)
 npm run build:wasm     # recompile src/wasm/kernels.c (needs clang with wasm32)
 npm run validate:cfd   # sphere drag through the full CFD pipeline

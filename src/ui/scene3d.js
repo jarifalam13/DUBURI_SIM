@@ -1,6 +1,7 @@
 // Three.js scene: pool with tiled floor and caustics, water surface, fog,
 // marine snow, the vehicle (STL or sample parts), thruster force arrows,
-// thruster wash bubbles, CG/CB markers, target-attitude ghost and cameras.
+// thruster wash bubbles, CG/CB markers, target-attitude ghost, cameras and the
+// preview of thrusters detected in an uploaded design.
 //
 // Frames: NED world / FRD body are mapped into three.js (y up) by
 //   three = (east, -down, -north)  i.e.  (x3, y3, z3) = (y, -z, -x)
@@ -355,6 +356,39 @@ export class Scene3D {
     this.bodySize = Math.max(...s);
     this.bboxMaxX = bbox.max[0];
     this.bboxCenter = bbox.center;
+    this.drawPreview();
+  }
+
+  // Detected thrusters waiting for Accept / Discard: a fixed arrow along the
+  // push direction and a ring of the duct diameter at each one (cyan = sure,
+  // amber = check). list: [{pos, axis, od, confidence}] or null to clear.
+  setThrusterPreview(list) {
+    this.previewDefs = list && list.length ? list : null;
+    this.drawPreview();
+  }
+  drawPreview() {
+    if (this.preview) {
+      this.preview.parent?.remove(this.preview);
+      this.preview.traverse((o) => { o.geometry?.dispose(); o.material?.dispose?.(); });
+      this.preview = null;
+    }
+    if (!this.previewDefs || !this.overlay) return;
+    const g = new THREE.Group();
+    const L = Math.min(0.25, Math.max(0.06, (this.bodySize || 0.5) * 0.22));
+    for (const t of this.previewDefs) {
+      const color = t.confidence >= 0.6 ? 0x5cc8e0 : 0xfab219;
+      const dir = toThree(t.axis).normalize(), at = toThree(t.pos);
+      const a = new THREE.ArrowHelper(dir, at, L, color, L * 0.3, L * 0.18);
+      const r = Math.max(0.015, (t.od || 0.1) / 2);
+      const pts = Array.from({ length: 41 }, (_, k) => new THREE.Vector3(Math.cos((k / 40) * 2 * Math.PI) * r, Math.sin((k / 40) * 2 * Math.PI) * r, 0));
+      const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color }));
+      ring.position.copy(at);
+      ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+      for (const o of [a.line, a.cone, ring]) { o.material.depthTest = false; o.renderOrder = 13; }
+      g.add(a, ring);
+    }
+    this.overlay.add(g);
+    this.preview = g;
   }
 
   setPickHandler(fn) { this.pickHandler = fn; this.renderer.domElement.style.cursor = fn ? 'crosshair' : ''; }

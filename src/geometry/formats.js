@@ -1,6 +1,8 @@
 // Mesh file formats for the vehicle design: STL (binary/ASCII), OBJ and PLY
 // (ASCII and binary). Everything is turned into a flat triangle soup
-// { positions: Float32Array (x,y,z per vertex, 3 vertices per triangle), triCount, format, name }.
+// { positions: Float32Array (x,y,z per vertex, 3 vertices per triangle), triCount, format, name },
+// plus `parts` [{name, start, count}] (triangle ranges) when the file names its
+// bodies (OBJ o/g, multi-solid ASCII STL; PLY has no standard part names).
 // Pure JS: runs in the page, in workers and in Node tests.
 
 import { parseSTL } from './stl.js';
@@ -18,11 +20,15 @@ export function parseMesh(buffer, filename = '') {
 }
 
 // Wavefront OBJ: v / f records (faces may be polygons, indices may be negative
-// or carry /vt/vn parts); groups and materials are ignored.
+// or carry /vt/vn parts); materials are ignored. Object (o) and group (g)
+// names are kept as triangle ranges in `parts` [{name: 'object/group', start, count}].
 export function parseOBJ(text) {
   const verts = [];
   const tris = [];
   let name = 'OBJ mesh';
+  let obj = '', grp = '', cur = '', curStart = 0;
+  const ranges = [];
+  const closePart = () => { const n = tris.length / 3 - curStart; if (n > 0) ranges.push({ name: cur, start: curStart, count: n }); };
   const lines = text.split(/\r?\n/);
   for (let ln = 0; ln < lines.length; ln++) {
     let line = lines[ln];
@@ -42,9 +48,18 @@ export function parseOBJ(text) {
         idx.push(v > 0 ? v - 1 : n + v);
       }
       for (let k = 1; k + 1 < idx.length; k++) tris.push(idx[0], idx[k], idx[k + 1]);
-    } else if (tag === 'o' && parts[1]) name = parts.slice(1).join(' ');
+    } else if (tag === 'o' || tag === 'g') {
+      const label = parts.slice(1).join(' ');
+      if (tag === 'o') { obj = label; grp = ''; if (parts[1]) name = label; }
+      else grp = label === 'default' ? '' : label;
+      const nm = [obj, grp].filter(Boolean).join('/');
+      if (nm !== cur) { closePart(); cur = nm; curStart = tris.length / 3; }
+    }
   }
-  return soup(verts, tris, 'obj', name);
+  closePart();
+  const out = soup(verts, tris, 'obj', name);
+  if (ranges.some((r) => r.name)) out.parts = ranges;
+  return out;
 }
 
 // Stanford PLY: ascii, binary_little_endian, binary_big_endian; vertex x/y/z

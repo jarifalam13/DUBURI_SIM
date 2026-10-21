@@ -49,16 +49,38 @@ function parseBinary(dv, n, header) {
   return { positions, triCount: n, format: 'binary', name: header || 'binary STL', invalidValues: bad };
 }
 
+// ASCII files may hold several `solid name … endsolid` blocks (one per CAD
+// body): their triangle ranges are returned as `parts` [{name, start, count}].
 function parseASCII(text) {
   const re = /vertex\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)/g;
+  const solids = [];
+  const sre = /^[ \t]*solid\b[ \t]*([^\r\n]*)/gim;
+  let s;
+  while ((s = sre.exec(text))) solids.push({ at: s.index, name: s[1].trim(), verts: 0 });
   const out = [];
-  let m;
-  while ((m = re.exec(text))) out.push(+m[1], +m[2], +m[3]);
+  let m, si = -1, lead = 0;
+  while ((m = re.exec(text))) {
+    while (si + 1 < solids.length && solids[si + 1].at <= m.index) si++;
+    out.push(+m[1], +m[2], +m[3]);
+    if (si >= 0) solids[si].verts++;
+    else lead++;
+  }
   const triCount = Math.floor(out.length / 9);
   if (triCount === 0) throw new Error('ASCII STL contains no facets');
   const positions = new Float32Array(out.slice(0, triCount * 9));
   const nm = /^\s*solid\s+([^\r\n]*)/i.exec(text);
-  return { positions, triCount, format: 'ascii', name: (nm && nm[1].trim()) || 'ASCII STL', invalidValues: 0 };
+  const res = { positions, triCount, format: 'ascii', name: (nm && nm[1].trim()) || 'ASCII STL', invalidValues: 0 };
+  if (solids.some((p) => p.name)) {
+    const parts = [];
+    let v = lead;
+    for (const p of solids) {
+      const start = Math.min(triCount, Math.floor(v / 3)), end = Math.min(triCount, Math.floor((v + p.verts) / 3));
+      if (end > start) parts.push({ name: p.name, start, count: end - start });
+      v += p.verts;
+    }
+    if (parts.length) res.parts = parts;
+  }
+  return res;
 }
 
 export function writeBinarySTL(positions, header = 'DUBURI ROV simulator') {

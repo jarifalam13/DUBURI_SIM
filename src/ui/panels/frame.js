@@ -1,7 +1,8 @@
 // Frame panel: choose how ArduSub mixes the thrusters (the automatic
 // maximum-DOF mixer or a built-in FRAME_CONFIG) on picture cards, build a
 // custom frame (body shape, thruster models, positions and directions, with
-// drag-and-drop on a top and a side drawing), and try the mixer by hand:
+// drag-and-drop on a top and a side drawing, or found in the uploaded design
+// by app.detectDesignThrusters), and try the mixer by hand:
 // move a command slider and see which thrusters fire, which way they push and
 // what force or torque comes out - or fly the simulated vehicle with it.
 
@@ -393,7 +394,10 @@ export default {
       app.refreshPanel();
     });
     const bodyInfo = m.source === 'shape' ? shapeEditor(app)
-      : h('p', { class: 'note' }, m.source === 'stl' ? `Your design${m.fileName ? ` ${m.fileName}` : ''} (units, axes and origin in Vehicle). Thrusters are drawn over it.` : 'The sample BlueROV2-style vehicle.');
+      : m.source === 'stl' ? h('div', { class: 'section', style: { gap: '6px' } },
+        h('p', { class: 'note' }, `Your design${m.fileName ? ` ${m.fileName}` : ''} (units, axes and origin in Vehicle). Thrusters are drawn over it.`),
+        h('div', { class: 'row' }, h('button', { class: 'btn', title: 'Find the thrusters in the uploaded design (part names T200_1…, or duct shapes) and build the frame from them', onclick: () => { stopFly(); app.detectDesignThrusters(); } }, 'Find thrusters in my design')))
+      : h('p', { class: 'note' }, 'The sample BlueROV2-style vehicle.');
 
     const addModelSel = selectField({ label: 'New thruster model', options: Object.entries(THRUSTER_PRESETS).map(([k, p]) => [k, p.label]), get: () => S.addModel || cfg.thrusters[0]?.preset || 't200-16v', set: (v) => { S.addModel = v; } });
     const addDirSel = selectField({ label: 'Pushes', options: DIRS.map(([k, l]) => [k, l]), get: () => S.addDir, set: (v) => { S.addDir = v; } });

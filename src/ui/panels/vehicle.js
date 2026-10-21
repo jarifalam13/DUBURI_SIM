@@ -47,7 +47,10 @@ export default {
       modelSec.append(g,
         vec3Field({ label: 'Origin offset (moves the hull in the vehicle frame)', get: () => m.offset || [0, 0, 0], set: (v) => { m.offset = v; app.changed({ geometry: true }); } }),
         checkbox('Sealed hull: count enclosed cavities as displaced water (for hollow shell exports)', () => m.sealedHull, (v) => { m.sealedHull = v; app.changed({ geometry: true }); }),
-        h('p', { class: 'note' }, 'Vehicle frame: X forward, Y to starboard (right), Z down, metres. Check the red X arrow in the 3D view points to the bow.'));
+        h('p', { class: 'note' }, 'Vehicle frame: X forward, Y to starboard (right), Z down, metres. Check the red X arrow in the 3D view points to the bow.'),
+        h('div', { class: 'row' },
+          h('button', { class: 'btn', onclick: () => app.detectDesignThrusters() }, 'Find thrusters in my design'),
+          h('span', { class: 'note' }, 'Parts named T200_1, Thruster 2… (OBJ, ASCII STL) or duct shapes. Runs after every upload.')));
     }
     const meshPill = topo.watertight ? h('span', { class: 'pill good' }, 'Closed mesh') : h('span', { class: 'pill warn' }, `${topo.boundaryEdges.toLocaleString()} open edges`);
     modelSec.append(h('div', { class: 'card' },

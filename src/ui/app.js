@@ -10,12 +10,14 @@ import { GraphDock } from './dock.js';
 import { PANELS } from './panels/index.js';
 import { Simulation } from '../sim/simulation.js';
 import { MODE, MODE_LABEL, SIM_MODES } from '../ardusub/sub.js';
-import { defaultConfig, normalizeConfig, applyParamFile } from '../vehicle/config.js';
+import { defaultConfig, normalizeConfig, applyParamFile, thrusterFromPreset } from '../vehicle/config.js';
 import { parseParamFile } from '../ardusub/params.js';
 import { sampleGeometry } from '../vehicle/sample.js';
 import { parseSTL, writeBinarySTL } from '../geometry/stl.js';
 import { parseMesh, DESIGN_ACCEPT, DESIGN_EXTENSIONS } from '../geometry/formats.js';
 import { makeModelTransform, transformPositions, bbox, guessUnits } from '../geometry/mesh.js';
+import { detectThrusters } from '../geometry/thrusterDetect.js';
+import { thrusterNotice } from './thrusterNotice.js';
 import { cgOf } from '../vehicle/model.js';
 import { shapeGeometry, DEFAULT_SHAPE } from '../vehicle/shapes.js';
 import { waterDensity } from '../hydro/water.js';
@@ -216,6 +218,7 @@ export class App {
   }
 
   async loadSession() {
+    this.closeDetection();
     const saved = storage.get(`${KEY}.team.${this.team.id}.cfg`, null);
     let cfg;
     if (saved) {
@@ -232,7 +235,7 @@ export class App {
     this.stlRaw = null;
     if (cfg.model.source === 'stl') {
       const buf = await idbGet(`stl:${this.team.id}`);
-      if (buf) { try { this.stlRaw = parseSTL(buf); } catch { this.stlRaw = null; } }
+      if (buf) { try { this.stlRaw = this.withParts(parseSTL(buf)); } catch { this.stlRaw = null; } }
       if (!this.stlRaw) { toast('Saved STL not found in this browser: showing the sample vehicle. Load your STL again in Vehicle.', 'bad', 6000); cfg.model.source = 'sample'; }
     }
     await this.updateGeometry({ resetVehicle: true });
@@ -266,7 +269,7 @@ export class App {
     const m = this.cfg.model;
     if (source === 'stl' && !this.stlRaw) {
       const buf = await idbGet(`stl:${this.team.id}`);
-      if (buf) { try { this.stlRaw = parseSTL(buf); } catch { this.stlRaw = null; } }
+      if (buf) { try { this.stlRaw = this.withParts(parseSTL(buf)); } catch { this.stlRaw = null; } }
       if (!this.stlRaw) { toast('No design is stored in this browser yet: upload your STL, OBJ or PLY.', 'bad', 5000); return false; }
     }
     if (source === 'shape') m.shape = { ...DEFAULT_SHAPE, ...(m.shape || {}) };
@@ -335,7 +338,11 @@ export class App {
       clearTimeout(this.shapeTimer);
       this.shapeTimer = setTimeout(() => this.updateGeometry({ resetVehicle: false }), 450);
     }
-    if (geometry) { this.updateGeometry({ resetVehicle: true }); return; }
+    if (geometry) {
+      // units, axes or origin changed while detected thrusters wait for Accept: find them again
+      this.updateGeometry({ resetVehicle: true }).then(() => { if (this.pendingDetection && this.cfg.model.source === 'stl') this.detectDesignThrusters({ auto: true, rerun: true }); });
+      return;
+    }
     clearTimeout(this.rebuildTimer);
     const run = () => { this.buildSim(false); this.activePanel?.onModelChanged?.(); this.dock?.reset?.(); };
     if (immediate) run(); else this.rebuildTimer = setTimeout(run, 120);
@@ -362,10 +369,11 @@ export class App {
 
   // replace the vehicle of the active team (vehicle file import)
   async loadVehicle(cfg, stlBuffer) {
+    this.closeDetection();
     this.cfg = cfg;
     this.stlRaw = null;
     if (stlBuffer) {
-      try { this.stlRaw = parseSTL(stlBuffer); } catch (e) { toast(`The STL inside the file could not be read: ${e.message}`, 'bad', 6000); }
+      try { this.stlRaw = this.withParts(parseSTL(stlBuffer)); } catch (e) { toast(`The STL inside the file could not be read: ${e.message}`, 'bad', 6000); }
       if (this.stlRaw) await idbPut(`stl:${this.team.id}`, stlBuffer);
     }
     if (cfg.model.source === 'stl' && !this.stlRaw) cfg.model.source = 'sample';
@@ -381,12 +389,15 @@ export class App {
     let parsed;
     try { parsed = parseMesh(buf, file.name); } catch (e) { toast(`Could not read ${file.name}: ${e.message}`, 'bad', 7000); return false; }
     if (parsed.triCount > 3_000_000) { toast('This design has more than 3 million triangles. Decimate it in your CAD tool first.', 'bad', 8000); return false; }
+    const parts = parsed.parts || null; // named bodies (OBJ groups, ASCII STL solids)
     if (parsed.format !== 'binary' && parsed.format !== 'ascii') parsed = parseSTL(writeBinarySTL(parsed.positions, file.name)); // OBJ/PLY are stored as STL
+    if (parts) parsed.parts = parts;
     this.stlRaw = parsed;
     const bb = bbox(parsed.positions);
     const m = this.cfg.model;
     m.source = 'stl';
     m.fileName = file.name;
+    m.parts = parts && parts.length <= 2000 ? parts : null; // kept for "Find thrusters" after a reload (the stored STL has no names)
     m.units = guessUnits(bb.size);
     m.origin = 'bbox';
     m.offset = [0, 0, 0];
@@ -397,7 +408,116 @@ export class App {
     this.firstRun = true;
     await this.updateGeometry({ resetVehicle: true });
     toast(`Loaded ${file.name}: ${parsed.triCount.toLocaleString()} triangles, ${m.units} units guessed`, 'good', 5000);
+    await this.detectDesignThrusters({ auto: true });
     return true;
+  }
+
+  // part names saved with the vehicle (the browser stores OBJ/PLY designs as nameless STL)
+  withParts(raw) {
+    const p = this.cfg?.model?.parts;
+    if (raw && !raw.parts && Array.isArray(p) && p.length && p.every((q) => q.start >= 0 && q.start + q.count <= raw.triCount)) raw.parts = p;
+    return raw;
+  }
+
+  // ------------------------------------------------------------------ thrusters found in the design
+  // Detection runs on the hull as placed in the vehicle frame (units, axes and
+  // origin from Vehicle), proposes the thrusters as a custom frame (automatic
+  // mixer) and keeps the previous layout until Accept / Discard.
+  async detectDesignThrusters({ auto = false, rerun = false } = {}) {
+    if (this.cfg.model.source !== 'stl' || !this.stlRaw || !this.vehiclePositions) {
+      if (!auto) toast('Thruster detection works on an uploaded design: choose My design (STL) in Vehicle.', 'bad', 5000);
+      return null;
+    }
+    this.busy('Looking for thrusters in the design…');
+    await new Promise((r) => setTimeout(r, 30));
+    let det;
+    try {
+      det = detectThrusters(this.vehiclePositions, { parts: this.stlRaw.parts, frameConfig: this.cfg.params.FRAME_CONFIG ?? 2, cg: cgOf(this.cfg, this.geo) });
+    } catch (e) {
+      this.busy(null);
+      console.error(e);
+      if (!auto) toast(`Thruster detection failed: ${e.message}`, 'bad', 6000);
+      return null;
+    }
+    this.busy(null);
+    if (!det.thrusters.length) {
+      if (rerun) { this.discardDetection('No thrusters found with these units and axes: previous thruster layout restored.'); return det; }
+      const how = 'Name the thruster parts T200_1, T200_2… in your CAD export (OBJ or ASCII STL), or place them in Frame.';
+      toast(`${det.summary}: your thruster layout is unchanged. ${det.notes.join(' ')} ${how}`, auto ? '' : 'bad', 9000);
+      return det;
+    }
+    this.applyDetection(det);
+    return det;
+  }
+
+  applyDetection(det) {
+    const cfg = this.cfg, P = cfg.params;
+    const prev = this.pendingDetection?.prev ?? { thrusters: JSON.parse(JSON.stringify(cfg.thrusters)), mixerSource: cfg.mixer.source };
+    const t200 = /^t200/.test(cfg.thrusters[0]?.preset || '') ? cfg.thrusters[0].preset : 't200-16v'; // keep the T200 voltage in use
+    cfg.thrusters = det.thrusters.map((d, i) => {
+      const t = thrusterFromPreset({ name: d.name, pos: d.pos.slice(), axis: d.axis.slice() }, d.type === 't200' ? t200 : d.preset);
+      if (d.type === 'generic') t.propDiameter = d.propDiameter;
+      // axis = push for a positive output; spin direction follows MOT_n_DIRECTION, as for a frame layout
+      t.polarity = (P[`MOT_${i + 1}_DIRECTION`] ?? 1) < 0 ? -1 : 1;
+      return t;
+    });
+    cfg.mixer.source = 'auto';
+    this.pendingDetection = { det, prev };
+    this.changed({ immediate: true });
+    this.showDetection();
+    this.refreshPanelIf('frame');
+    this.refreshPanelIf('thrusters');
+  }
+
+  showDetection() {
+    const p = this.pendingDetection;
+    if (!p) return;
+    const el = thrusterNotice(this, p.det, {
+      accept: () => this.acceptDetection(),
+      discard: () => this.discardDetection(),
+      flip: (i) => this.flipDetected(i),
+      openFrame: () => this.openPanel('frame'),
+    });
+    if (this.detectEl?.isConnected) this.detectEl.replaceWith(el); else this.root.append(el);
+    this.detectEl = el;
+    const sure = p.det.directions === 'frame';
+    this.scene.setThrusterPreview(this.cfg.thrusters.map((t, i) => ({ pos: t.pos, axis: t.axis, od: p.det.thrusters[i]?.od, confidence: Math.min(p.det.thrusters[i]?.confidence ?? 0, sure ? 1 : 0.4) })));
+  }
+
+  closeDetection() {
+    this.pendingDetection = null;
+    this.detectEl?.remove();
+    this.detectEl = null;
+    this.scene?.setThrusterPreview(null);
+  }
+
+  flipDetected(i) {
+    const t = this.cfg.thrusters[i];
+    if (!t) return;
+    t.axis = t.axis.map((v) => -v || 0);
+    this.changed({ immediate: true });
+    this.showDetection();
+    this.refreshPanelIf('frame');
+    this.refreshPanelIf('thrusters');
+  }
+
+  acceptDetection() {
+    const n = this.cfg.thrusters.length;
+    this.closeDetection();
+    this.scheduleSave();
+    toast(`${n} thruster${n > 1 ? 's' : ''} kept as your custom frame (Frame panel)`, 'good');
+  }
+
+  discardDetection(msg = 'Previous thruster layout restored') {
+    const p = this.pendingDetection;
+    if (!p) return;
+    this.cfg.thrusters = p.prev.thrusters;
+    this.cfg.mixer.source = p.prev.mixerSource;
+    this.closeDetection();
+    this.changed({ immediate: true });
+    this.refreshPanelIf('frame');
+    this.refreshPanelIf('thrusters');
+    toast(msg, '', 5000);
   }
 
   busy(text) {
