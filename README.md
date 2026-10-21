@@ -1,57 +1,96 @@
 # DUBURI — ROV Simulator
 
-A browser-based underwater vehicle simulator for testing ROV/AUV designs and
-ArduSub tuning before the vehicle goes in the water. Load your hull (STL), place
-the thrusters, and fly it in a virtual pool with an ArduSub-style interface and
-a gamepad.
+Put your ROV in a virtual pool instead of the water. Upload your 3D design, check
+that your thruster layout really gives roll, pitch and yaw, fly it with a gamepad
+through a faithful port of the ArduSub 4.5.7 controllers, and tune the parameters
+before the first pool session. Everything runs in one HTML file in the browser.
 
-> **Status:** work in progress. The physics, allocation and hydrodynamics core
-> is in place and unit-tested; the ArduSub control port, CFD lab and user
-> interface are being built.
+**Open it:** `dist/duburi-sim.html` (Chrome or Edge recommended; needs WebGL2).
+Nothing to install, works offline.
 
 ## What it does
 
-- **ArduSub control stack, ported from ArduSub 4.5.7 source** — motor mixer
-  (`AP_Motors6DOF`), attitude controller (`AC_AttitudeControl_Sub`), depth
-  controller (`AC_PosControl`), flight modes, joystick/button handling, and the
-  real parameter names (`ATC_*`, `PSC_*`, `MOT_*`, `JS_*`, `BTNn_*`).
-  Import/export `.param` files.
-- **Automatic thruster allocation** — from thruster positions and directions it
-  finds the largest set of independently controllable axes (full 6-DOF when the
-  layout allows it, otherwise the maximum possible), builds an ArduSub-style
-  factor table, and reports authority and cross-coupling per axis.
-- **Hydrodynamics**
-  - 6-DOF Fossen model with full 6×6 added mass and coupled damping.
-  - Added mass from a potential-flow **boundary element method** (panel method)
-    on your hull; validated against analytic sphere/ellipsoid results.
-  - Drag/damping from a GPU **Lattice-Boltzmann CFD** virtual tow tank
-    (in progress), with projected-area estimates as defaults.
-  - Surface-aware buoyancy, thruster in-flow loss, ventilation near the surface,
-    thruster–hull interaction, current, turbulence and waves.
-- **Team profiles** — DUBURI header with a team logo/name/colour so several
-  teams can use the same simulator.
+| | |
+|---|---|
+| **Your design** | Upload STL (binary/ASCII), OBJ or PLY — top-bar *Upload design* or drop the file anywhere. Pick units and which axis is forward/up; the hull is voxelised for volume, centre of buoyancy, inertia, projected areas and contact points. |
+| **Thruster layout → DOF** | Place thrusters on the model (click the hull). The allocator finds the largest set of independently controllable axes — full 6-DOF when the layout allows it, otherwise the maximum possible — and reports authority and cross-coupling per axis. Or fly the exact ArduSub `FRAME_CONFIG` table. |
+| **ArduSub 4.5.7 port** | `AP_Motors6DOF` mixers and saturation, `AC_AttitudeControl_Sub` (quaternion controller, input shaping, rate PIDs), `AC_PosControl` depth controller, position hold, `joystick.cpp` pilot mapping and `BTNn_FUNCTION`s, spool-up, arming checks, surface/bottom detection, pilot-input, leak (`FS_LEAK_ENABLE`) and internal-pressure (`FS_PRESS_*`) failsafes. Real parameter names; `.param` import/export (Mission Planner and QGC formats). |
+| **Fly** | Keyboard or gamepad (Gamepad API, QGC button numbering), Cockpit/QGC-style HUD, chase/orbit/camera/top views, live target-vs-actual graphs, CSV logs. |
+| **Pool & water** | Any length, width and depth — test tank to open sea — with a flat floor or a shallow end and slope; wall height; presets; fresh or sea water; current, turbulence and linear waves. |
+| **Pressure** | Absolute pressure = air pressure + water column, with compressible water (UNESCO EOS-80). Buoyancy changes with depth (water density, hull compressibility). Bar02 / Bar30 / custom depth sensor with range limit and resolution, read through AP_Baro's formula (9800 Pa/m × `BARO_SPEC_GRAV`). Housings leak past their depth rating (orifice flow against the Boyle-compressed air inside) → leak detector → ArduSub failsafes. |
+| **Hydrodynamics** | 6-DOF Fossen plant with full 6×6 added mass and its Coriolis/Munk terms, coupled linear + quadratic damping, surface-aware buoyancy, thruster in-flow loss, ventilation and jet–hull interaction. |
+| **Added mass (BEM)** | Constant-source panel method on a smooth hull mesh, GMRES, three resolutions with Richardson extrapolation and a GCI-style uncertainty. |
+| **Drag & damping (CFD)** | Lattice-Boltzmann (D3Q19, regularised BGK + Smagorinsky LES, Bouzidi interpolated walls with moving-wall term, momentum exchange) in a virtual tow tank on the GPU (WebGL2), with grid convergence (Celik et al. 2008 GCI) and Reynolds extrapolation C(Re) = C∞ + K/Re. Streamlines and hull pressure shown on the 3D model. |
+| **AUTO-TUNE** | One click: converged BEM added mass + CFD damping for *your* design, then closed-loop step tests to tune roll, pitch, yaw and depth gains. Every value is shown, editable and only applied when you say so. Mass, CG and thrust you entered are never overwritten. |
+| **Teams** | DUBURI wordmark with per-team name, logo and colour; each team keeps its own vehicle in the browser. |
 
-## Repository layout
+## Quick start
 
-```
-src/
-  core/       math (quaternions, SVD, pseudo-inverse), seeded RNG
-  geometry/   STL I/O, voxelisation, mass properties, smooth hull extraction
-  alloc/      ArduSub frame tables, thruster allocation & DOF analysis
-  hydro/      water properties, BEM added-mass solver
-  physics/    thruster model, environment, 6-DOF vehicle plant
-tests/        node:test unit tests (run with `npm test`)
-```
+1. **Upload design** (top bar). Set units and axes in *Vehicle*.
+2. Enter what you know: real mass and CG, thruster positions/directions/polarity, measured thrust tables if you have them.
+3. **Pool & water**: your pool size and depth, water type, housing depth rating.
+4. **Frame & mixer**: see which axes your layout controls.
+5. **AUTO-TUNE** → review → *Apply selected*.
+6. Fly: `Enter` arms, `1`–`6` change mode, `G` shows graphs. Gamepad works in Chrome/Edge.
+7. *Save .param* and load it on the Pixhawk with QGroundControl or Mission Planner.
+
+## Validation
+
+All numbers below are reproducible with the tools in `tools/` and the tests in `tests/` (63 automated tests, `npm test`).
+
+| Check | Result |
+|---|---|
+| Sphere drag, CFD pipeline at Re = 100 (`npm run validate:cfd`) | 8 / 12 / 16 cells per diameter: Cd 1.311 / 1.189 / 1.143 → Richardson 1.074 vs 1.088 standard curve (−1.2 %) |
+| GPU (WebGL2) vs CPU lattice-Boltzmann (`node tools/gpu-check.mjs`) | state difference ~4 × 10⁻⁷, with and without interpolated walls and rotation |
+| Panel method vs Capytaine on identical meshes (`tools/bem-crosscheck.py`) | within ~0.2–1 % (largest: ROV heave 2.1 % at 3 966 panels) |
+| Panel method vs exact ellipsoid (Lamb) at 3 380 panels | +0.5 … +1.9 % |
+| WebAssembly kernels vs JavaScript | BEM ≤ 2 × 10⁻⁵ relative, LBM ≤ 10⁻⁶; BEM 3.3× faster |
+| EOS-80 seawater density and bulk modulus | all 14 UNESCO check values to < 0.01 ppm |
+| Firmware port | mixer maths, RC scaling, sqrt controller, spool logic, button mapping and failsafes checked against the ArduSub source behaviour |
+
+## Limits — read before trusting a number
+
+- Not the ArduSub binary (no SITL): the control code is ported; the EKF is replaced by an estimator with realistic noise; no compass, GPS or MAVLink link.
+- The tether is not modelled.
+- The CFD runs at Re of a few thousand and extrapolates; reliable for open frames and boxy hulls (sharp-edge separation), less for smooth streamlined hulls. Each result carries its grid uncertainty.
+- The panel method is ideal-flow; parts thinner than a voxel are thickened slightly.
+- Water temperature is uniform with depth; thrusters and electronics don't change with pressure.
+- Results are only as good as the mass, CG and thruster data you enter. Measure them.
 
 ## Development
 
 ```bash
 npm install
-npm test          # unit tests
+npm test               # 63 unit tests (physics, firmware, allocation, BEM, CFD, WASM, pressure)
+npm run build          # -> dist/duburi-sim.html (stand-alone) and dist/artifact.html
+npm run build:wasm     # recompile src/wasm/kernels.c (needs clang with wasm32)
+npm run validate:cfd   # sphere drag through the full CFD pipeline
+node tools/gpu-check.mjs                   # GPU vs CPU LBM (needs Playwright + Chromium)
+node tools/bem-export.mjs bem.json && python3 tools/bem-crosscheck.py bem.json   # needs capytaine
 ```
 
-## Conventions
+```
+src/
+  core/       math, seeded RNG, grid-convergence (GCI)
+  geometry/   STL/OBJ/PLY, voxelisation, mass properties, smooth hull extraction
+  alloc/      ArduSub frame tables, thruster allocation & DOF analysis
+  hydro/      water properties (EOS-80), BEM panel method, hull meshing
+  cfd/        D3Q19 lattice-Boltzmann (CPU, WebGL2 GPU), tow-tank studies
+  wasm/       C kernels compiled to WebAssembly (BEM, LBM)
+  physics/    thruster model, environment (pool, pressure), 6-DOF plant
+  ardusub/    ArduSub 4.5.7 port: params, motors, attitude, position, joystick, sensors, modes
+  sim/        simulation loop, telemetry, step tests and auto-tune
+  ui/         three.js scene, HUD, panels, graphs, jobs/worker
+  worker/     background worker (BEM, CFD, auto-tune)
+profiles/     DUBURI Pixhawk parameter file
+tools/        validation and build tools
+```
 
-- World frame: NED, origin at the still-water surface in the pool centre.
-- Body frame: FRD (x forward, y starboard, z down), origin at the CG.
-- Euler angles follow ArduPilot's 3-2-1 convention.
+### Conventions
+
+- World frame NED, origin at the still-water surface, pool centre. Body frame FRD, origin at the CG.
+- Euler angles follow ArduPilot (3-2-1). Thruster positions in metres from the model origin.
+
+## License
+
+GPL-3.0-or-later (the control code is a port of ArduPilot, which is GPL-3.0). three.js is MIT.
