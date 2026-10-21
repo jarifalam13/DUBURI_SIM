@@ -1,6 +1,7 @@
 // Builds the whole simulator into one self-contained HTML file:
 //   dist/duburi-sim.html     full document (open it directly in a browser)
 //   dist/artifact.html       body fragment for hosting inside claude.ai
+//   docs/index.html          the same page, served by GitHub Pages
 // The worker is bundled first and inlined as a string (started from a blob).
 
 import { build } from 'esbuild';
@@ -57,4 +58,8 @@ ${body}</body>
 mkdirSync('dist', { recursive: true });
 writeFileSync('dist/duburi-sim.html', full);
 writeFileSync('dist/artifact.html', body);
+// GitHub Pages (Settings > Pages > Deploy from a branch: main, /docs)
+mkdirSync('docs', { recursive: true });
+writeFileSync('docs/index.html', full);
+writeFileSync('docs/.nojekyll', '');
 console.log(`dist/duburi-sim.html ${(full.length / 1024).toFixed(0)} KB (worker ${(workerCode.length / 1024).toFixed(0)} KB) in ${Date.now() - t0} ms`);

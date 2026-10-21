@@ -5,8 +5,9 @@ that your thruster layout really gives roll, pitch and yaw, fly it with a gamepa
 through a faithful port of the ArduSub 4.5.7 controllers, and tune the parameters
 before the first pool session. Everything runs in one HTML file in the browser.
 
-**Open it:** `dist/duburi-sim.html` (Chrome or Edge recommended; needs WebGL2).
-Nothing to install, works offline.
+**Open it online:** <https://jarifalamclaude-max.github.io/simulator/> (Chrome or Edge recommended; needs WebGL2).
+
+**Or offline:** download `dist/duburi-sim.html` and double-click it. Nothing to install.
 
 ## What it does
 
@@ -62,7 +63,7 @@ All numbers below are reproducible with the tools in `tools/` and the tests in `
 ```bash
 npm install
 npm test               # 63 unit tests (physics, firmware, allocation, BEM, CFD, WASM, pressure)
-npm run build          # -> dist/duburi-sim.html (stand-alone) and dist/artifact.html
+npm run build          # -> dist/duburi-sim.html (stand-alone), dist/artifact.html, docs/index.html (GitHub Pages)
 npm run build:wasm     # recompile src/wasm/kernels.c (needs clang with wasm32)
 npm run validate:cfd   # sphere drag through the full CFD pipeline
 node tools/gpu-check.mjs                   # GPU vs CPU LBM (needs Playwright + Chromium)
@@ -85,6 +86,12 @@ src/
 profiles/     DUBURI Pixhawk parameter file
 tools/        validation and build tools
 ```
+
+### Hosting
+
+GitHub Pages serves `docs/index.html` from the `main` branch (Settings → Pages →
+Deploy from a branch → `main`, `/docs`). After a change: `npm run build`, commit,
+push; the site updates in a minute or two.
 
 ### Conventions
 

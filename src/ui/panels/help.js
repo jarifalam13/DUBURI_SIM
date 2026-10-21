@@ -61,7 +61,7 @@ export default {
         h('div', { class: 'section' }, h('h3', {}, 'What is simulated'), h('ul', { style: { margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '6px' } }, SIMULATED.map((s) => h('li', { class: 'note' }, s)))),
         h('div', { class: 'section' }, h('h3', {}, 'Limits to keep in mind'), h('ul', { style: { margin: 0, paddingLeft: '20px', display: 'flex', flexDirection: 'column', gap: '6px' } }, LIMITS.map((s) => h('li', { class: 'note' }, s)))),
         h('div', { class: 'section' }, h('h3', {}, 'About'),
-          h('p', { class: 'note' }, 'DUBURI Simulator. Control logic ported from ArduPilot ArduSub 4.5.7 (GPL-3.0); this simulator is therefore GPL-3.0 as well. 3D rendering by three.js (MIT). Source: github.com/jarifalamclaude-max/simulator'),
+          h('p', { class: 'note' }, 'DUBURI Simulator. Control logic ported from ArduPilot ArduSub 4.5.7 (GPL-3.0); this simulator is therefore GPL-3.0 as well. 3D rendering by three.js (MIT). Online: jarifalamclaude-max.github.io/simulator · Source: github.com/jarifalamclaude-max/simulator'),
           h('p', { class: 'note' }, `QGroundControl button numbers: ${SDL_BUTTON_NAMES.map((n, i) => `${i} ${n}`).join(', ')}.`))),
     };
   },
