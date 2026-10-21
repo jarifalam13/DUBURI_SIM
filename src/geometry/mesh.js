@@ -138,7 +138,7 @@ export class VoxelGrid {
 }
 
 export function makeGrid(bb, cell, margin = 1) {
-  const n = [0, 1, 2].map((k) => Math.max(1, Math.ceil(bb.size[k] / cell) + 2 * margin));
+  const n = [0, 1, 2].map((k) => Math.max(1, Math.ceil(bb.size[k] / cell - 1e-4) + 2 * margin));
   const origin = [0, 1, 2].map((k) => bb.center[k] - (n[k] * cell) / 2);
   return new VoxelGrid(n[0], n[1], n[2], cell, origin);
 }
