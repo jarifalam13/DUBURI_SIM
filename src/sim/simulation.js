@@ -167,7 +167,11 @@ export class Simulation {
     }
     if (link && this.loopCount % this.loopHz === 0) fw.receive({ type: 'HEARTBEAT', sysid });
     this.sensors.update(this.plant, this.dtFw);
-    const pwm = fw.fastLoop(this.dtFw);
+    const out = fw.fastLoop(this.dtFw);
+    // servo output channels -> thrusters (motor i drives the channels of SERVOn_FUNCTION 33+i)
+    const map = fw.motors.servoMap, pwm = this.pwmBuf || (this.pwmBuf = []);
+    pwm.length = this.plant.thrusters.length;
+    for (let i = 0; i < pwm.length; i++) pwm[i] = out[map?.[i]?.[0] ?? i] ?? 1500;
     for (let k = 0; k < this.substeps; k++) {
       this.env.step(this.dtPhys);
       this.plant.step(this.dtPhys, pwm);

@@ -2,7 +2,9 @@
 // Generates src/ardusub/paramdefs.js: every parameter ArduSub 4.5.7 exposes,
 // with ArduPilot's own metadata, storage type and default.
 //
-//   node tools/gen-params.mjs [--ardupilot ../ardupilot] [--check apm.pdef.json] [--out src/ardusub/paramdefs.js]
+//   node tools/gen-params.mjs [--ardupilot ../ardupilot] [--check apm.pdef.json] [--out src/ardusub/paramdefs.js] [-v]
+//   (debug: --cond EXPR evaluates an #if, --macro NAME, --pp FILE:FROM:TO prints preprocessed lines)
+// Needs the ArduSub-4.5.7 checkout with all of libraries/ (git sparse-checkout add libraries).
 //
 // 1. Documentation: a port of Tools/autotest/param_metadata/param_parse.py
 //    (@Param/@Group/@Path doc comments, {Sub} vehicle tags, Vector3Parameter,

@@ -151,11 +151,14 @@ test('depth sensor: AP_Baro water formula, specific gravity and range limit', ()
   fresh.runFor(1);
   const d = fresh.plant.position[2];
   const expect = fresh.env.pressureGauge(d) / 9800;
-  assert.ok(Math.abs(fresh.sensors.depthMeasured - expect) < 0.004, `${fresh.sensors.depthMeasured} vs ${expect}`);
+  // AP_Baro publishes the 10 Hz mean of the MS5837 conversions (~70 ms behind the vehicle)
+  assert.ok(Math.abs(fresh.sensors.depthMeasured - expect) < 0.01, `${fresh.sensors.depthMeasured} vs ${expect}`);
+  assert.ok(Math.abs(fresh.sensors.depthMeasured - (fresh.sensors.pressureMeas - fresh.sensors.groundPressure) / 9800) < 1e-9, 'water formula');
   // sea water read with SPEC_GRAV 1.0 shows ~2.6 % too deep (1025 x 9.807 / 9800)
   const sea = makeSim((c) => { c.environment.salinity = 35; c.environment.temperature = 15; c.start = { position: [0, 0, 3], yaw: 0 }; c.params.BARO_SPEC_GRAV = 1.0; });
   sea.runFor(1);
-  const ratio = sea.sensors.depthMeasured / sea.plant.position[2];
+  // against the depth of the pressure the sensor published (the vehicle moves during the 10 Hz average)
+  const ratio = sea.sensors.depthMeasured / ((sea.sensors.pressureMeas - sea.sensors.groundPressure) / (sea.env.rho * sea.env.g));
   assert.ok(ratio > 1.02 && ratio < 1.03, `ratio ${ratio}`);
   // a Bar02 (2 bar absolute) stops reading at about 10 m
   const bar02 = makeSim((c) => { c.sensors.depthSensor = 'bar02'; c.environment.pool = { length: 30, width: 30, depth: 40 }; c.start = { position: [0, 0, 20], yaw: 0 }; });
@@ -166,7 +169,8 @@ test('depth sensor: AP_Baro water formula, specific gravity and range limit', ()
 
 test('ArduSub leak failsafe: warn after 20 s, SURFACE mode with FS_LEAK_ENABLE 2', () => {
   // the DUBURI file has no leak detector (LEAK1_PIN -1): fit one for this test
-  const sim = makeSim((c) => { c.params.FS_LEAK_ENABLE = 2; c.hull.leakSensor = true; c.hull.leakSensorSource = 'user'; c.start = { position: [0, 0, 2], yaw: 0 }; });
+  // SURFACE requires a position estimate in 4.5.7 (mode.h:453): give the vehicle a DVL/USBL
+  const sim = makeSim((c) => { c.params.FS_LEAK_ENABLE = 2; c.hull.leakSensor = true; c.hull.leakSensorSource = 'user'; c.sensors.positioning = true; c.sensors.positioningSource = 'user'; c.start = { position: [0, 0, 2], yaw: 0 }; });
   sim.fw.setMode(MODE.ALT_HOLD);
   sim.runFor(0.5);
   assert.ok(sim.fw.arm());

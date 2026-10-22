@@ -1313,11 +1313,9 @@ export class ArduSubSim {
   // motors_output (ArduSub/motors.cpp:10-27)
   motorsOutput(dt) {
     const m = this.motors;
-    if (this.mode === MODE.MOTOR_DETECT) return m.escFrame ? m.escFrame(m.servoPending.slice(), dt) : m.pwm.slice();
-    if (this.motorTestProto?.active) {
-      if (this.motorTestProto.verify(this.ms)) return this.motorTestProto.output(dt);
-      return m.escFrame ? m.escFrame(m.servoPending.slice(), dt) : m.pwm.slice();
-    }
+    const passive = () => (m.outputPassive ? m.outputPassive(dt) : m.pwm.slice());
+    if (this.mode === MODE.MOTOR_DETECT) return passive().slice();
+    if (this.motorTestProto?.active) { this.motorTestProto.verify(this.ms); return passive().slice(); }
     m.setInterlock?.(true);
     m.test = this.motorTest && this.armed ? this.motorTest : null;
     return m.output(dt).slice();
