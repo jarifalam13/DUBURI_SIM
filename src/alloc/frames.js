@@ -75,6 +75,11 @@ export function frameTable(frameConfig) {
   const f = FRAMES[frameConfig] ?? FRAMES[5];
   return f.table.map((r) => r.slice());
 }
+// add_motor_raw_6dof testing_order: every built-in Sub frame tests motors in board order 1..N
+export function frameTestOrder(frameConfig) {
+  const f = FRAMES[frameConfig] ?? FRAMES[5];
+  return f.table.map((_, i) => i + 1);
+}
 
 // --- Representative geometries -------------------------------------------
 // Positions in the vehicle frame (FRD, metres, relative to the CG).

@@ -160,7 +160,8 @@ void main() {
       qw = ${interp ? `texelFetch(Q${i >> 2}, fc, 0).${CH[i & 3]}` : '0.0'};
       l = pf - (qw > 0.0 ? qw : 0.5) * ${cvec(i)} - refp;
       sv = own[${OPP[i]}] + gi + ${f1(2 * W[i])};
-      dp = -${cvec(i)} * sv; F += dp; M += cross(l, dp);
+      // Galilean-invariant momentum exchange on the moving wall (as LBMCPU.force)
+      dp = -${cvec(i)} * sv - cross(omega, l) * (own[${OPP[i]}] - gi); F += dp; M += cross(l, dp);
     }
 `;
   }

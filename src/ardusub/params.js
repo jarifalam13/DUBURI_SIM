@@ -1,190 +1,245 @@
-// ArduSub 4.5.7 parameters that the simulator emulates, with defaults taken
-// from the firmware source (library defaults + ArduSub's defaults_table).
-// Parameters present in an imported file but not listed here are kept
-// verbatim so a .param file round-trips without loss.
+// ArduSub 4.5.7 parameter table: every parameter the firmware exposes, with
+// ArduPilot's own metadata, MAVLink storage type and default (generated into
+// paramdefs.js by tools/gen-params.mjs from the ArduSub-4.5.7 sources). Each
+// entry also says whether the simulator uses it (effect 'sim') or only stores
+// and exports it ('inert'). Mission Planner / QGroundControl .param import and
+// export with types, legacy-name conversion and range checks live here too.
 
-const P = [];
-const def = (name, value, o = {}) => P.push({ name, default: value, ...o });
+import { ROWS, ENUMS } from './paramdefs.js';
 
-// ---- Frame / motors ----
-def('FRAME_CONFIG', 1, { group: 'Frame', desc: 'Frame configuration (motor layout and mixing table)', values: { 0: 'BlueROV1', 1: 'Vectored', 2: 'Vectored 6DOF', 3: 'Vectored 6DOF 90°', 4: 'SimpleROV-3', 5: 'SimpleROV-4', 6: 'SimpleROV-5', 7: 'Custom' }, reboot: true });
-for (let i = 1; i <= 12; i++) def(`MOT_${i}_DIRECTION`, 1, { group: 'Motors', desc: `Motor ${i} normal (1) or reverse (-1)`, values: { 1: 'normal', '-1': 'reverse' } });
-def('MOT_PWM_MIN', 1100, { group: 'Motors', unit: 'µs', min: 800, max: 1500, desc: 'PWM output minimum' });
-def('MOT_PWM_MAX', 1900, { group: 'Motors', unit: 'µs', min: 1500, max: 2200, desc: 'PWM output maximum' });
-def('MOT_FV_CPLNG_K', 1.0, { group: 'Motors', min: 0, max: 1.5, desc: 'Vectored frame only: forward/vertical to pitch decoupling factor' });
-def('MOT_SPOOL_TIME', 0.5, { group: 'Motors', unit: 's', min: 0, max: 2, desc: 'Time to spool up after arming' });
-def('MOT_THST_HOVER', 0.5, { group: 'Motors', min: 0.2, max: 0.8, desc: 'Hover throttle (ROVs are neutral: 0.5)' });
-def('SCHED_LOOP_RATE', 400, { group: 'Motors', unit: 'Hz', min: 50, max: 800, desc: 'Main loop rate (attitude controller rate)', reboot: true });
+export const MAV_PARAM_TYPE = { INT8: 2, INT16: 4, INT32: 6, REAL32: 9 };
+const TYPE_NAME = { 2: 'INT8', 4: 'INT16', 6: 'INT32', 9: 'REAL32' };
+const INT_RANGE = { 2: [-128, 127], 4: [-32768, 32767], 6: [-2147483648, 2147483647] };
 
-// ---- Attitude controller ----
-for (const ax of ['RLL', 'PIT', 'YAW']) def(`ATC_ANG_${ax}_P`, 6.0, { group: 'Attitude', min: 0, max: 12, desc: `${ax} angle controller P gain (rate per angle error)` });
-const rateDefaults = {
-  RLL: { P: 0.135, I: 0.09, D: 0.0036, IMAX: 0.444, FLT: 30 },
-  PIT: { P: 0.135, I: 0.09, D: 0.0036, IMAX: 0.444, FLT: 30 },
-  YAW: { P: 0.18, I: 0.018, D: 0, IMAX: 0.222, FLT: 5 },
-};
-for (const [ax, d] of Object.entries(rateDefaults)) {
-  const g = 'Attitude rate ' + ax;
-  def(`ATC_RAT_${ax}_P`, d.P, { group: g, min: 0, max: 2, desc: `${ax} rate controller P gain (motor output per rad/s error)` });
-  def(`ATC_RAT_${ax}_I`, d.I, { group: g, min: 0, max: 2, desc: `${ax} rate controller I gain` });
-  def(`ATC_RAT_${ax}_D`, d.D, { group: g, min: 0, max: 0.1, desc: `${ax} rate controller D gain` });
-  def(`ATC_RAT_${ax}_IMAX`, d.IMAX, { group: g, min: 0, max: 1, desc: `${ax} rate controller I term maximum` });
-  def(`ATC_RAT_${ax}_FLTT`, d.FLT, { group: g, unit: 'Hz', min: 0, max: 100, desc: `${ax} target filter frequency` });
-  def(`ATC_RAT_${ax}_FLTE`, 0, { group: g, unit: 'Hz', min: 0, max: 100, desc: `${ax} error filter frequency (0 = off)` });
-  def(`ATC_RAT_${ax}_FLTD`, d.FLT, { group: g, unit: 'Hz', min: 0, max: 100, desc: `${ax} derivative filter frequency` });
-  def(`ATC_RAT_${ax}_PDMX`, 0, { group: g, min: 0, max: 1, desc: `${ax} P+D output limit (0 = off)` });
-  def(`ATC_RAT_${ax}_FF`, 0, { group: g, desc: 'Feed-forward (not applied by the ArduSub 4.5 rate loop)', inert: true });
-  def(`ATC_RAT_${ax}_SMAX`, 0, { group: g, desc: 'Slew-rate limiter (not simulated)', inert: true });
-  def(`ATC_RAT_${ax}_D_FF`, 0, { group: g, desc: 'Derivative feed-forward (not applied by ArduSub 4.5)', inert: true });
-}
-def('ATC_ACCEL_R_MAX', 110000, { group: 'Attitude', unit: 'cdeg/s²', min: 0, max: 180000, desc: 'Roll acceleration limit for input shaping (0 disables)' });
-def('ATC_ACCEL_P_MAX', 110000, { group: 'Attitude', unit: 'cdeg/s²', min: 0, max: 180000, desc: 'Pitch acceleration limit for input shaping (0 disables)' });
-def('ATC_ACCEL_Y_MAX', 110000, { group: 'Attitude', unit: 'cdeg/s²', min: 0, max: 180000, desc: 'Yaw acceleration limit for input shaping (0 disables)' });
-def('ATC_RATE_FF_ENAB', 1, { group: 'Attitude', values: { 0: 'Disabled', 1: 'Enabled' }, desc: 'Rate feed-forward / input shaping enable' });
-def('ATC_INPUT_TC', 0.15, { group: 'Attitude', unit: 's', min: 0, max: 1, desc: 'Attitude control input time constant (smaller = crisper)' });
-def('ATC_SLEW_YAW', 6000, { group: 'Attitude', unit: 'cdeg/s', min: 500, max: 18000, desc: 'Yaw target slew rate when holding heading' });
-def('ATC_RATE_R_MAX', 0, { group: 'Attitude', unit: 'deg/s', min: 0, max: 1080, desc: 'Roll rate limit (0 = off)' });
-def('ATC_RATE_P_MAX', 0, { group: 'Attitude', unit: 'deg/s', min: 0, max: 1080, desc: 'Pitch rate limit (0 = off)' });
-def('ATC_RATE_Y_MAX', 180, { group: 'Attitude', unit: 'deg/s', min: 0, max: 1080, desc: 'Yaw rate limit (0 = off)' });
-def('ATC_ANG_LIM_TC', 1.0, { group: 'Attitude', unit: 's', desc: 'Depth-hold lean-angle limit time constant' });
-def('ATC_ANGLE_BOOST', 1, { group: 'Attitude', desc: 'Angle boost (no effect in ArduSub 6DOF mixing)', inert: true });
-def('ATC_THR_MIX_MIN', 0.1, { group: 'Attitude', desc: 'Throttle mix (not used by ArduSub 6DOF mixing)', inert: true });
-def('ATC_THR_MIX_MAX', 0.5, { group: 'Attitude', desc: 'Throttle mix (not used by ArduSub 6DOF mixing)', inert: true });
-def('ATC_THR_MIX_MAN', 0.1, { group: 'Attitude', desc: 'Throttle mix (not used by ArduSub 6DOF mixing)', inert: true });
-def('ANGLE_MAX', 4500, { group: 'Pilot', unit: 'cdeg', min: 1000, max: 8000, desc: 'Maximum lean angle commanded by the pilot' });
-
-// ---- Position controller ----
-def('PSC_POSZ_P', 3.0, { group: 'Depth control', min: 0, max: 10, desc: 'Depth position P (cm/s per cm)' });
-def('PSC_VELZ_P', 8.0, { group: 'Depth control', min: 0, max: 30, desc: 'Vertical velocity P (cm/s² per cm/s)' });
-def('PSC_VELZ_I', 0, { group: 'Depth control', min: 0, max: 10, desc: 'Vertical velocity I' });
-def('PSC_VELZ_D', 0, { group: 'Depth control', min: 0, max: 5, desc: 'Vertical velocity D' });
-def('PSC_VELZ_IMAX', 1000, { group: 'Depth control', unit: 'cm/s²', desc: 'Vertical velocity I max' });
-def('PSC_VELZ_FF', 0, { group: 'Depth control', desc: 'Vertical velocity feed-forward' });
-def('PSC_VELZ_FLTE', 5, { group: 'Depth control', unit: 'Hz', desc: 'Vertical velocity error filter' });
-def('PSC_VELZ_FLTD', 5, { group: 'Depth control', unit: 'Hz', desc: 'Vertical velocity derivative filter' });
-def('PSC_ACCZ_P', 0.5, { group: 'Depth control', min: 0, max: 3, desc: 'Vertical acceleration P (throttle per cm/s², x0.001)' });
-def('PSC_ACCZ_I', 0.1, { group: 'Depth control', min: 0, max: 3, desc: 'Vertical acceleration I' });
-def('PSC_ACCZ_D', 0, { group: 'Depth control', min: 0, max: 1, desc: 'Vertical acceleration D' });
-def('PSC_ACCZ_IMAX', 100, { group: 'Depth control', desc: 'Vertical acceleration I max (raised to hover*1000 at run time)' });
-def('PSC_ACCZ_FF', 0, { group: 'Depth control', desc: 'Vertical acceleration feed-forward' });
-def('PSC_ACCZ_FLTT', 0, { group: 'Depth control', unit: 'Hz', desc: 'Vertical accel target filter' });
-def('PSC_ACCZ_FLTE', 20, { group: 'Depth control', unit: 'Hz', desc: 'Vertical accel error filter' });
-def('PSC_ACCZ_FLTD', 0, { group: 'Depth control', unit: 'Hz', desc: 'Vertical accel derivative filter' });
-def('PSC_ACCZ_PDMX', 0, { group: 'Depth control', desc: 'Vertical accel P+D limit (0 = off)' });
-def('PSC_JERK_Z', 50, { group: 'Depth control', unit: 'm/s³', desc: 'Vertical jerk limit for shaping' });
-def('PSC_POSXY_P', 1.0, { group: 'Position control', desc: 'Horizontal position P' });
-def('PSC_VELXY_P', 6.0, { group: 'Position control', desc: 'Horizontal velocity P' });
-def('PSC_VELXY_I', 0.5, { group: 'Position control', desc: 'Horizontal velocity I' });
-def('PSC_VELXY_D', 0, { group: 'Position control', desc: 'Horizontal velocity D' });
-def('PSC_VELXY_IMAX', 1000, { group: 'Position control', desc: 'Horizontal velocity I max' });
-def('PSC_VELXY_FLTE', 5, { group: 'Position control', unit: 'Hz', desc: 'Horizontal velocity error filter' });
-def('PSC_VELXY_FLTD', 5, { group: 'Position control', unit: 'Hz', desc: 'Horizontal velocity derivative filter' });
-def('PSC_JERK_XY', 5, { group: 'Position control', unit: 'm/s³', desc: 'Horizontal jerk limit' });
-def('WPNAV_SPEED', 100, { group: 'Position control', unit: 'cm/s', desc: 'Default horizontal speed (position hold)' });
-def('WPNAV_SPEED_UP', 250, { group: 'Position control', unit: 'cm/s', desc: 'Climb speed used by Surface mode (limited by PILOT_SPEED_UP)' });
-def('WPNAV_ACCEL', 250, { group: 'Position control', unit: 'cm/s²', desc: 'Horizontal acceleration (position hold)' });
-
-// ---- Pilot ----
-def('PILOT_SPEED_UP', 100, { group: 'Pilot', unit: 'cm/s', min: 20, max: 500, desc: 'Max climb rate in depth hold' });
-def('PILOT_SPEED_DN', 0, { group: 'Pilot', unit: 'cm/s', min: 0, max: 500, desc: 'Max descent rate (0 = use PILOT_SPEED_UP)' });
-def('PILOT_ACCEL_Z', 100, { group: 'Pilot', unit: 'cm/s²', min: 50, max: 500, desc: 'Vertical acceleration in depth hold' });
-def('PILOT_THR_FILT', 0, { group: 'Pilot', unit: 'Hz', desc: 'Pilot throttle filter (0 = off)' });
-def('THR_DZ', 100, { group: 'Pilot', min: 0, max: 400, desc: 'Throttle deadzone around mid-stick in depth hold' });
-def('ACRO_RP_P', 4.5, { group: 'Pilot', desc: 'Acro roll/pitch rate gain' });
-def('ACRO_YAW_P', 3.375, { group: 'Pilot', desc: 'Pilot yaw rate gain (deg/s per input unit /100)' });
-def('ACRO_EXPO', 0.3, { group: 'Pilot', min: 0, max: 1, desc: 'Acro roll/pitch expo' });
-def('ACRO_TRAINER', 2, { group: 'Pilot', values: { 0: 'Disabled', 1: 'Leveling', 2: 'Leveling and limited' }, desc: 'Acro trainer' });
-def('ACRO_BAL_ROLL', 1, { group: 'Pilot', desc: 'Acro roll balance' });
-def('ACRO_BAL_PITCH', 1, { group: 'Pilot', desc: 'Acro pitch balance' });
-
-// ---- Joystick ----
-def('JS_GAIN_DEFAULT', 0.5, { group: 'Joystick', min: 0.1, max: 1, desc: 'Default pilot gain' });
-def('JS_GAIN_MAX', 1.0, { group: 'Joystick', min: 0.2, max: 1, desc: 'Maximum pilot gain' });
-def('JS_GAIN_MIN', 0.25, { group: 'Joystick', min: 0.1, max: 0.8, desc: 'Minimum pilot gain' });
-def('JS_GAIN_STEPS', 4, { group: 'Joystick', min: 1, max: 10, desc: 'Number of gain steps' });
-def('JS_THR_GAIN', 1.0, { group: 'Joystick', min: 0.5, max: 4, desc: 'Throttle gain scalar' });
-def('JS_LIGHTS_STEPS', 8, { group: 'Joystick', min: 1, max: 10, desc: 'Light brightness steps' });
-export const DEFAULT_BUTTONS = [
-  [0, 0], [5, 0], [7, 0], [6, 0], [4, 0], [1, 0], [3, 0], [21, 0],
-  [48, 0], [23, 27], [22, 26], [42, 47], [43, 46], [33, 45], [32, 44], [0, 0],
+// Parameters the simulator reads (the rest are stored, shown and exported unchanged).
+const SIM = [
+  /^FRAME_CONFIG$/, /^MOT_/, /^ATC_/, /^PSC_/, /^WPNAV_/, /^CIRCLE_/, /^PILOT_/, /^ACRO_/, /^THR_DZ$/, /^ANGLE_MAX$/,
+  /^SURFACE_DEPTH$/, /^SURFTRAK_DEPTH$/, /^JS_/, /^BTN\d+_S?FUNCTION$/, /^RC\d+_(MIN|MAX|TRIM|DZ|REVERSED)$/,
+  /^RC_(OPTIONS|OVERRIDE_TIME|PROTOCOLS|SPEED|FS_TIMEOUT)$/, /^FS_/, /^SCHED_LOOP_RATE$/, /^SYSID_(THISMAV|MYGCS)$/,
+  /^BATT_(MONITOR|CAPACITY|LOW_VOLT|CRT_VOLT|LOW_MAH|CRT_MAH|FS_LOW_ACT|FS_CRT_ACT|LOW_TIMER|FS_VOLTSRC|ARM_VOLT|ARM_MAH)$/,
+  /^BARO_(SPEC_GRAV|ALT_OFFSET|EXT_BUS|FLTR_RNG|PROBE_EXT)$/, /^BARO\d_GND_PRESS$/, /^INS_(GYRO_FILTER|ACCEL_FILTER|FAST_SAMPLE|GYRO_RATE)$/,
+  /^AHRS_TRIM_[XYZ]$/, /^EK3_(HGT_DELAY|ABIAS_P_NSE|ACC_BIAS_LIM|ACC_P_NSE|HGT_I_GATE|MAG_M_NSE|POSNE_M_NSE|TAU_OUTPUT|SRC1_\w+)$/,
+  /^COMPASS_(ENABLE|USE\d?|DEC|MOTCT|MOT_[XYZ])$/, /^RNGFND1_(TYPE|MIN_CM|MAX_CM|ORIENT|POS_[XYZ])$/, /^RNGFND_SQ_MIN$/,
+  /^TEMP1_TYPE$/, /^LEAK\d_(PIN|TYPE|LOGIC)$/, /^VISO_TYPE$/, /^FLOW_TYPE$/, /^ARMING_(CHECK|REQUIRE|OPTIONS)$/,
+  /^MNT1_(TYPE|DEFLT_MODE|RC_RATE|PITCH_MIN|PITCH_MAX|ROLL_MIN|ROLL_MAX|YAW_MIN|YAW_MAX)$/, /^CAM1_TYPE$/, /^ACTUATOR\d_INC$/,
+  /^FILT\d_(TYPE|NOTCH_FREQ|NOTCH_Q|NOTCH_ATT)$/, /^RELAY\d+_(FUNCTION|PIN|DEFAULT|INVERTED)$/, /^SERVO\d+_(FUNCTION|MIN|MAX|TRIM|REVERSED)$/,
 ];
-for (let i = 0; i < 32; i++) {
-  const d = DEFAULT_BUTTONS[i] || [0, 0];
-  def(`BTN${i}_FUNCTION`, d[0], { group: 'Buttons', desc: `Button ${i} function`, enum: 'button' });
-  def(`BTN${i}_SFUNCTION`, d[1], { group: 'Buttons', desc: `Button ${i} function with shift`, enum: 'button' });
+// Values ArduSub overwrites at boot whatever is stored.
+export const FORCED = {
+  MOT_THST_HOVER: { value: 0.5, why: 'ArduSub sets MOT_THST_HOVER to 0.5 at every boot (ROVs are neutrally buoyant; ArduSub/Parameters.cpp:801)' },
+};
+// Parameters whose change rebuilds the vehicle model / needs a reboot on the autopilot.
+export const STRUCTURAL = /^(FRAME_CONFIG|SCHED_LOOP_RATE|INS_|AHRS_TRIM|BARO_SPEC|EK3_)|^MOT_\d+_DIRECTION$/;
+
+const GROUP_LABEL = {
+  ACRO: 'Acro mode', ACTUATOR: 'Actuators', AHRS: 'AHRS', ANGLE: 'Pilot', ARMING: 'Arming', ARSPD: 'Airspeed', ATC: 'Attitude control',
+  AVOID: 'Avoidance', BARO: 'Barometer / depth sensor', BATT: 'Battery monitor', BRD: 'Board', BTN: 'Joystick buttons', CAM: 'Camera',
+  CAN: 'CAN bus', CIRCLE: 'Circle mode', COMPASS: 'Compass', EK2: 'EKF2', EK3: 'EKF3', FENCE: 'Fence', FILT: 'Filters (notch)',
+  FLOW: 'Optical flow', FRAME: 'Frame', FS: 'Failsafes', GCS: 'Ground station', GPS: 'GPS', GRIP: 'Gripper', INS: 'IMU (INS)',
+  JS: 'Joystick', LEAK: 'Leak detector', LOG: 'Logging', LOIT: 'Loiter', MIS: 'Mission', MNT: 'Camera mount', MOT: 'Motors',
+  NTF: 'Notify (LEDs / buzzer)', PILOT: 'Pilot', PSC: 'Position / depth control', RALLY: 'Rally points', RC: 'RC input', RCMAP: 'RC mapping',
+  RELAY: 'Relays', RNGFND: 'Rangefinder', RPM: 'RPM sensors', SCHED: 'Scheduler', SCR: 'Scripting', SERIAL: 'Serial ports',
+  SERVO: 'Servo / motor outputs', SR: 'MAVLink stream rates', STAT: 'Statistics', SURFACE: 'Depth', SURFTRAK: 'Depth', SYSID: 'MAVLink ids',
+  TEMP: 'Temperature sensors', TERRAIN: 'Terrain', THR: 'Pilot', VISO: 'Visual odometry', WPNAV: 'Waypoint navigation', XTRACK: 'Waypoint navigation',
+  WP: 'Waypoint navigation', ORIGIN: 'EKF origin', FORMAT: 'System', NET: 'Networking', DDS: 'DDS / ROS 2', PRX: 'Proximity', EAHRS: 'External AHRS',
+};
+export function paramGroup(name) {
+  const tok = name.split('_')[0];
+  if (/^EK[23]$/.test(tok)) return tok;
+  return tok.replace(/^BATT[2-9A-G]$/, 'BATT').replace(/^([A-Z]+?)\d+$/, '$1');
 }
+export const groupLabel = (g) => GROUP_LABEL[g] || g;
 
-// ---- RC input ----
-const dz = [30, 30, 30, 40, 30, 30];
-for (let i = 1; i <= 8; i++) {
-  const g = 'RC input';
-  def(`RC${i}_MIN`, 1100, { group: g, unit: 'µs' });
-  def(`RC${i}_MAX`, 1900, { group: g, unit: 'µs' });
-  def(`RC${i}_TRIM`, i === 3 ? 1100 : 1500, { group: g, unit: 'µs' });
-  def(`RC${i}_DZ`, i <= 6 ? dz[i - 1] : 0, { group: g, unit: 'µs' });
-  def(`RC${i}_REVERSED`, 0, { group: g, values: { 0: 'Normal', 1: 'Reversed' } });
-}
+const table = (i) => (i >= 0 ? Object.fromEntries(ENUMS[i].map(([k, v]) => [k, v])) : null);
+const enumCache = new Map();
+const cachedTable = (i) => { if (i < 0) return null; if (!enumCache.has(i)) enumCache.set(i, table(i)); return enumCache.get(i); };
 
-// ---- Failsafes / misc ----
-def('FS_PILOT_INPUT', 2, { group: 'Failsafe', values: { 0: 'Disabled', 1: 'Warn only', 2: 'Disarm' }, desc: 'Action when pilot input is lost' });
-def('FS_PILOT_TIMEOUT', 3.0, { group: 'Failsafe', unit: 's', desc: 'Pilot input timeout' });
-def('FS_LEAK_ENABLE', 1, { group: 'Failsafe', values: { 0: 'Disabled', 1: 'Warn only', 2: 'Enter surface mode' }, desc: 'Action when the leak detector senses water' });
-def('FS_PRESS_ENABLE', 0, { group: 'Failsafe', values: { 0: 'Disabled', 1: 'Warn only' }, desc: 'Action when the internal (enclosure) pressure exceeds FS_PRESS_MAX' });
-def('FS_PRESS_MAX', 105000, { group: 'Failsafe', unit: 'Pa', min: 0, max: 200000, desc: 'Internal pressure failsafe threshold' });
-def('SURFACE_DEPTH', -10, { group: 'Depth', unit: 'cm', desc: 'Depth reading at which the vehicle counts as surfaced' });
-def('BARO_SPEC_GRAV', 1.0, { group: 'Depth', min: 0.98, max: 1.05, desc: 'Specific gravity used to convert pressure to depth (1.0 fresh, 1.024 sea)' });
-def('INS_GYRO_FILTER', 20, { group: 'Sensors', unit: 'Hz', desc: 'Gyro low-pass filter' });
-def('INS_ACCEL_FILTER', 20, { group: 'Sensors', unit: 'Hz', desc: 'Accelerometer low-pass filter' });
-def('AHRS_TRIM_X', 0, { group: 'Sensors', unit: 'rad', desc: 'Roll trim of the autopilot board' });
-def('AHRS_TRIM_Y', 0, { group: 'Sensors', unit: 'rad', desc: 'Pitch trim of the autopilot board' });
-def('EK3_HGT_DELAY', 60, { group: 'Sensors', unit: 'ms', desc: 'Depth sensor delay relative to IMU' });
+export const PARAM_DEFS = ROWS.map(([name, def, type, units, min, max, inc, displayName, desc, vi, bi, flags]) => {
+  const effect = FORCED[name] ? 'inert' : SIM.some((r) => r.test(name)) ? 'sim' : 'inert';
+  const p = {
+    name, default: def, type: TYPE_NAME[type], mavType: type, units, unit: units, displayName, desc,
+    group: paramGroup(name), effect, values: cachedTable(vi), bitmask: cachedTable(bi),
+    reboot: !!(flags & 1), readOnly: !!(flags & 2), advanced: !!(flags & 4), volatile: !!(flags & 16), calibration: !!(flags & 32),
+    subDefault: !!(flags & 64), reference: !!(flags & 128),
+  };
+  if (min !== null) p.min = min;
+  if (max !== null) p.max = max;
+  if (inc !== null) p.increment = inc;
+  if (flags & 8) p.defaultUnknown = true;
+  if (FORCED[name]) { p.forced = FORCED[name].value; p.note = FORCED[name].why; }
+  if (effect === 'inert') p.inert = true;
+  return p;
+});
+export const PARAM_INDEX = Object.fromEntries(PARAM_DEFS.map((p) => [p.name, p]));
+export const PARAM_GROUPS = [...new Set(PARAM_DEFS.map((p) => p.group))].sort();
 
-export const PARAM_DEFS = P;
-export const PARAM_INDEX = Object.fromEntries(P.map((p) => [p.name, p]));
+// ArduSub's default joystick button table (joystick.cpp default_js_buttons) as [FUNCTION, SFUNCTION].
+export const DEFAULT_BUTTONS = Array.from({ length: 16 }, (_, i) => [PARAM_INDEX[`BTN${i}_FUNCTION`].default, PARAM_INDEX[`BTN${i}_SFUNCTION`].default]);
 
+let defaultsCache = null;
 export function defaultParams() {
-  return Object.fromEntries(P.map((p) => [p.name, p.default]));
+  if (!defaultsCache) defaultsCache = Object.fromEntries(PARAM_DEFS.map((p) => [p.name, p.default]));
+  return { ...defaultsCache };
+}
+export const isSimParam = (name) => PARAM_INDEX[name]?.effect === 'sim';
+export function mavTypeOf(name, fallback) { return PARAM_INDEX[name]?.mavType ?? fallback ?? null; }
+
+// ---------------------------------------------------------------- legacy names
+// Old names that ArduSub converts on boot (AP_Param::convert_old_parameters and
+// the library conversions), so older files land on the current parameter.
+const LEGACY = {
+  // ArduSub/Parameters.cpp:822-834 Sub::convert_old_parameters: RAT_*_FILT -> RAT_*_FLTE
+  ATC_RAT_RLL_FILT: 'ATC_RAT_RLL_FLTE', ATC_RAT_PIT_FILT: 'ATC_RAT_PIT_FLTE', ATC_RAT_YAW_FILT: 'ATC_RAT_YAW_FLTE',
+  // ArduSub/Parameters.cpp:764-770 conversion_table (failsafe battery / compass enable moved into the libraries)
+  FS_BATT_VOLTAGE: 'BATT_LOW_VOLT', FS_BATT_MAH: 'BATT_LOW_MAH', FS_BATT_ENABLE: 'BATT_FS_LOW_ACT', MAG_ENABLE: 'COMPASS_ENABLE',
+  // AP_BattMonitor analog backend rename, AP_Airspeed shortened name
+  BATT_AMP_PERVOLT: 'BATT_AMP_PERVLT', ARSPD_TUBE_ORDER: 'ARSPD_TUBE_ORDR',
+  // AP_Relay 4.5 conversion (RELAY_PIN.. -> RELAYn_PIN)
+  RELAY_PIN: 'RELAY1_PIN', RELAY_PIN2: 'RELAY2_PIN', RELAY_PIN3: 'RELAY3_PIN', RELAY_PIN4: 'RELAY4_PIN', RELAY_PIN5: 'RELAY5_PIN', RELAY_PIN6: 'RELAY6_PIN',
+};
+export function legacyName(name) {
+  if (PARAM_INDEX[name]) return null;
+  if (LEGACY[name] && PARAM_INDEX[LEGACY[name]]) return LEGACY[name];
+  let m;
+  if ((m = /^BATT(\d)_AMP_PERVOLT$/.exec(name)) && PARAM_INDEX[`BATT${m[1]}_AMP_PERVLT`]) return `BATT${m[1]}_AMP_PERVLT`;
+  if ((m = /^MNT_(\w+)$/.exec(name)) && PARAM_INDEX[`MNT1_${m[1]}`]) return `MNT1_${m[1]}`; // AP_Mount 4.3: MNT_ -> MNT1_
+  if ((m = /^CAM_(\w+)$/.exec(name)) && PARAM_INDEX[`CAM1_${m[1]}`] && !PARAM_INDEX[name]) return `CAM1_${m[1]}`; // AP_Camera 4.4: CAM_ -> CAM1_
+  return null;
+}
+// Rename legacy entries in a parsed {name: value} map. The current name wins when both are present.
+export function convertLegacyParams(params) {
+  const out = {}, converted = [];
+  for (const [k, v] of Object.entries(params)) { const n = legacyName(k); if (!n) out[k] = v; }
+  for (const [k, v] of Object.entries(params)) {
+    const n = legacyName(k);
+    if (!n) continue;
+    if (!(n in out)) { out[n] = v; converted.push([k, n]); } else converted.push([k, n, 'ignored: file also has the new name']);
+  }
+  return { params: out, converted };
 }
 
-// Parse Mission Planner (NAME,VALUE) or QGroundControl (tab separated with ids) files.
+// ---------------------------------------------------------------- import / export
+// Mission Planner (NAME,VALUE / NAME VALUE) or QGroundControl (sysid compid NAME VALUE TYPE) files.
 export function parseParamFile(text) {
-  const out = {};
-  const errors = [];
-  text.split(/\r?\n/).forEach((line, n) => {
+  const out = {}, types = {}, errors = [];
+  let sysid = null, compid = null, qgcLines = 0, mpLines = 0;
+  String(text).split(/\r?\n/).forEach((line, n) => {
     const s = line.trim();
     if (!s || s.startsWith('#')) return;
     let name, value;
     const qgc = s.split('\t');
-    if (qgc.length >= 4 && /^\d+$/.test(qgc[0]) && /^\d+$/.test(qgc[1])) { name = qgc[2]; value = qgc[3]; }
-    else {
-      const m = /^([A-Za-z0-9_]+)[\s,]+([-+0-9.eE]+)/.exec(s);
+    if (qgc.length >= 4 && /^\d+$/.test(qgc[0]) && /^\d+$/.test(qgc[1])) {
+      name = qgc[2].trim(); value = qgc[3].trim();
+      sysid ??= +qgc[0]; compid ??= +qgc[1];
+      if (qgc[4] !== undefined && /^\d+$/.test(qgc[4].trim())) types[name.toUpperCase()] = +qgc[4].trim();
+      qgcLines++;
+    } else {
+      const m = /^([A-Za-z0-9_]+)\s*[,\s]\s*([-+0-9.eE]+|nan|inf)\s*(?:[,\s].*)?$/i.exec(s);
       if (!m) { errors.push(`line ${n + 1}: ${s.slice(0, 40)}`); return; }
-      name = m[1]; value = m[2];
+      name = m[1]; value = m[2]; mpLines++;
     }
     const v = Number(value);
     if (!Number.isFinite(v)) { errors.push(`line ${n + 1}: bad value for ${name}`); return; }
     out[name.toUpperCase()] = v;
   });
-  return { params: out, errors };
+  return { params: out, errors, types, sysid, compid, format: qgcLines > mpLines ? 'qgc' : 'mp' };
 }
 
-export function formatParamFile(params, { style = 'mp', header = true } = {}) {
+// shortest decimal that reads back as the same float32 (what the autopilot stores)
+export function formatValue(v, mavType = 9) {
+  if (!Number.isFinite(v)) return '0';
+  if (mavType !== 9) return String(Math.round(v));
+  if (Number.isInteger(v) && Math.abs(v) < 1e15) return String(v);
+  const f = Math.fround(v);
+  for (let p = 1; p <= 9; p++) { const s = v.toPrecision(p); if (Math.fround(+s) === f) return String(+s); }
+  return String(v);
+}
+
+export const PARAM_META = Symbol('paramMeta'); // {types, sysid, compid} carried by allParamsForExport()
+
+// style 'mp' (Mission Planner .param) or 'qgc' (QGroundControl .params, with MAV_PARAM_TYPE per row)
+export function formatParamFile(params, { style = 'mp', header = true, types, sysid, compid } = {}) {
+  const meta = params[PARAM_META] || {};
+  types = { ...(meta.types || {}), ...(types || {}) };
+  sysid = Math.round(sysid ?? meta.sysid ?? params.SYSID_THISMAV ?? 1);
+  compid = Math.round(compid ?? meta.compid ?? 1);
   const names = Object.keys(params).sort();
   const lines = [];
-  if (header) lines.push(`# DUBURI simulator parameter export ${new Date().toISOString()}`);
-  for (const n of names) {
-    const v = params[n];
-    const s = Number.isInteger(v) ? String(v) : String(+v.toPrecision(9));
-    lines.push(style === 'qgc' ? `1\t1\t${n}\t${s}\t9` : `${n},${s}`);
+  const typeOf = (n) => mavTypeOf(n, types[n] ?? (Number.isInteger(params[n]) ? null : 9)) ?? guessType(n, params[n]);
+  if (style === 'qgc') {
+    if (header) lines.push(`# Onboard parameters for Vehicle ${sysid}`, '#', '# Stack: ArduPilot', '# Vehicle: Sub', '# Version: 4.5.7', '#', '# Vehicle-Id Component-Id Name Value Type');
+    for (const n of names) { const t = typeOf(n); lines.push(`${sysid}\t${compid}\t${n}\t${formatValue(params[n], t)}\t${t}`); }
+  } else {
+    if (header) lines.push(`# DUBURI simulator parameter export (ArduSub 4.5.7) ${new Date().toISOString()}`);
+    for (const n of names) lines.push(`${n},${formatValue(params[n], typeOf(n))}`);
   }
   return lines.join('\n') + '\n';
 }
+// unknown parameter without a type from a QGC file: integers by name pattern, else float
+function guessType(name, v) {
+  if (!Number.isInteger(v)) return 9;
+  if (/_(TYPE|ENABLE|ENABLED|PIN|BUS|ADDR|ORIENT|PROTOCOL|FUNCTION|OPTIONS?|MASK|ID|DEVID|REVERSED)\d*$/.test(name)) return /DEVID|_ID\d*$|MASK|OPTIONS/.test(name) ? 6 : 2;
+  return 9;
+}
 
-export function validateParam(name, value) {
+// ---------------------------------------------------------------- validation
+// The range ArduSub's documentation gives, widened to include the default (some
+// @Range lines are narrower than the vehicle default, e.g. ATC_ACCEL_Y_MAX with
+// Sub's 110000), with 0 accepted where the default is 0 ("disabled").
+export function paramRange(name) {
   const d = PARAM_INDEX[name];
-  if (!Number.isFinite(value)) return 'Not a number';
   if (!d) return null;
-  if (d.min !== undefined && value < d.min) return `Below minimum ${d.min}`;
-  if (d.max !== undefined && value > d.max) return `Above maximum ${d.max}`;
-  return null;
+  let lo = d.min, hi = d.max;
+  if (lo !== undefined && d.default < lo) lo = d.default;
+  if (hi !== undefined && d.default > hi) hi = d.default;
+  const ir = INT_RANGE[d.mavType];
+  if (ir) { lo = Math.max(lo ?? ir[0], ir[0]); hi = Math.min(hi ?? ir[1], ir[1]); }
+  return { min: lo, max: hi, zeroOk: d.default === 0 };
+}
+// {value, error, warning}: error = rejected (not a number); value is clamped to
+// the range and rounded for integer parameters; warning explains any change.
+export function checkParam(name, value, { clamp = true } = {}) {
+  const v0 = typeof value === 'string' ? Number(value) : value;
+  if (typeof v0 !== 'number' || !Number.isFinite(v0)) return { value: null, error: 'Not a number' };
+  const d = PARAM_INDEX[name];
+  if (!d) return { value: v0 };
+  let v = v0;
+  const warn = [];
+  if (d.mavType !== 9 && !Number.isInteger(v)) { v = Math.round(v); warn.push(`${d.type} parameter: rounded to ${v}`); }
+  const r = paramRange(name);
+  if (!(r.zeroOk && v === 0)) {
+    if (r.min !== undefined && v < r.min) { warn.push(`below minimum ${r.min}`); if (clamp) v = r.min; }
+    if (r.max !== undefined && v > r.max) { warn.push(`above maximum ${r.max}`); if (clamp) v = r.max; }
+  }
+  if (d.values && !(v in d.values) && !d.bitmask) warn.push('not one of the documented values');
+  if (d.bitmask && Number.isInteger(v)) {
+    const known = Object.keys(d.bitmask).reduce((m, b) => m + 2 ** +b, 0);
+    if (v > 0 && (v & ~known) !== 0 && v < 2 ** 31) warn.push('sets undocumented bits');
+  }
+  if (d.forced !== undefined && v !== d.forced) warn.push(`ArduSub forces ${d.forced} at boot`);
+  const res = { value: v };
+  if (warn.length) res.warning = (v !== v0 && clamp ? `clamped to ${v}: ` : '') + warn.join('; ');
+  return res;
+}
+// Back-compatible check: null when acceptable, else a message (out of range or not a number).
+export function validateParam(name, value) {
+  const r = checkParam(name, value, { clamp: false });
+  if (r.error) return r.error;
+  const d = PARAM_INDEX[name];
+  if (!d || !r.warning || !/minimum|maximum/.test(r.warning)) return null;
+  return r.warning.replace(/^./, (c) => c.toUpperCase());
+}
+// Cross-parameter checks ArduSub would refuse to arm with (ARMING_CHECK_RC) or that break the maths.
+export function crossCheck(P) {
+  const out = [];
+  for (let i = 1; i <= 16; i++) {
+    const mn = P[`RC${i}_MIN`], mx = P[`RC${i}_MAX`], tr = P[`RC${i}_TRIM`], dz = P[`RC${i}_DZ`] ?? 0;
+    if (mn === undefined || mx === undefined) continue;
+    if (!(mn < mx)) out.push([`RC${i}_MIN`, `RC${i}_MIN must be below RC${i}_MAX`]);
+    else if (tr !== undefined && (tr < mn || tr > mx)) out.push([`RC${i}_TRIM`, `RC${i}_TRIM outside RC${i}_MIN..MAX`]);
+    else if (tr !== undefined && (tr - dz <= mn || tr + dz >= mx) && i !== 3) out.push([`RC${i}_DZ`, `RC${i}_DZ leaves no stick travel around the trim`]);
+  }
+  if (P.JS_GAIN_MIN > P.JS_GAIN_MAX) out.push(['JS_GAIN_MIN', 'JS_GAIN_MIN is above JS_GAIN_MAX']);
+  if (P.MOT_PWM_MIN >= P.MOT_PWM_MAX) out.push(['MOT_PWM_MIN', 'MOT_PWM_MIN must be below MOT_PWM_MAX']);
+  return out;
 }

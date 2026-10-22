@@ -74,8 +74,11 @@ test('steady surge speed balances thrust and drag', () => {
   const c = boxGeo.centroid;
   const { sim } = boxVehicle({ thrusters: [thrusterFromPreset({ name: 'aft', pos: [-0.2, c[1], c[2] + 0.03], axis: [1, 0, 0] })], linear: [5, 5, 5, 0.5, 0.5, 0.5], quadratic: [30, 30, 30, 2, 2, 2] });
   sim.thrusters[0].def.inflowModel = false;
+  // a lone prop's reaction torque rolls the box and seeds its (physical) Munk yaw instability
+  sim.thrusters[0].torqueRatio = 0;
   sim.reset({ position: [-10, 0, 2] });
-  for (let i = 0; i < 9600; i++) sim.step(1 / 800, [1700]);
+  // steady after ~4 s; much longer and the box's Munk yaw instability (A22 > A11) takes over
+  for (let i = 0; i < 4800; i++) sim.step(1 / 800, [1700]);
   const T = sim.thrusters[0].Teff;
   const u = sim.velocityBody[0];
   const drag = 5 * u + 30 * u * u;
@@ -86,6 +89,7 @@ test('steady surge speed balances thrust and drag', () => {
 test('in-flow reduces thrust at speed', () => {
   const a = boxVehicle(), b = boxVehicle();
   b.sim.thrusters[0].def.inflowModel = false;
+  for (const v of [a, b]) v.sim.thrusters[0].torqueRatio = 0;
   for (const v of [a, b]) { v.sim.reset({ position: [-10, 0, 2] }); for (let i = 0; i < 8000; i++) v.sim.step(1 / 800, [1850]); }
   assert.ok(a.sim.velocityBody[0] < b.sim.velocityBody[0], 'in-flow model should lower top speed');
 });

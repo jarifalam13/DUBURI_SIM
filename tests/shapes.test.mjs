@@ -15,7 +15,8 @@ test('torpedo body volume matches cylinder + ellipsoidal ends', () => {
   const L = 1.2, D = 0.2, r = D / 2;
   const g = shapeGeometry({ type: 'torpedo', length: L, diameter: D, ducts: false });
   const a = analyzeGeometry(g.positions, { targetCells: 60 });
-  const V = Math.PI * r * r * (L - D) + (2 / 3) * Math.PI * r * r * (0.75 * D) + (2 / 3) * Math.PI * r * r * (0.55 * D);
+  // cylinder L - 1.3 D plus caps protruding 0.75 D and 0.55 D: overall length exactly L
+  const V = Math.PI * r * r * (L - 1.3 * D) + (2 / 3) * Math.PI * r * r * (0.75 * D) + (2 / 3) * Math.PI * r * r * (0.55 * D);
   assert.ok(Math.abs(a.volume - V) / V < 0.05, `${a.volume} vs ${V}`);
 });
 

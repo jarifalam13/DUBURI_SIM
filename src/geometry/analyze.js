@@ -1,7 +1,7 @@
 // One-shot geometry analysis of a hull (already in the vehicle frame, metres).
 // Heavy for big STLs, so the browser runs it in a worker.
 
-import { bbox, topology, signedVolume, makeGrid, voxelizeSolid, voxelizeSurface, massProps, projections, buoyancyElements, contactPoints, union, fillEnclosed, rayVolume } from './mesh.js';
+import { bbox, topology, signedVolume, makeGrid, voxelizeSolid, voxelizeSurface, massProps, projections, buoyancyElements, contactPoints, union, fillEnclosed, rayVolume, projectionColumns } from './mesh.js';
 
 export function chooseCell(bb, targetCells = 56, minCell = 0.003) {
   const L = Math.max(...bb.size);
@@ -30,9 +30,12 @@ export function analyzeGeometry(positions, opts = {}) {
   if (mp.volume <= 0) { mp = massProps(wet); volumeSource = 'surface-voxel'; }
   // Sealed cavities (e.g. hollow shells exported without internal parts) count
   // as displaced volume only if the user says the hull is sealed.
-  const sealed = opts.sealedHull ? massProps(fillEnclosed(wet)) : null;
+  const sealedGrid = opts.sealedHull ? fillEnclosed(wet) : null;
+  const sealed = sealedGrid ? massProps(sealedGrid) : null;
   onProgress(0.75, 'Projected areas');
+  // about the solid centroid for display; the plant re-evaluates them about the CG from the columns
   const proj = projections(wet, mp.centroid);
+  const projCols = projectionColumns(wet);
   onProgress(0.8, 'Integrating the displaced volume');
   // exact-along-ray volume: no voxel staircase on thin plates and small parts
   let ray = null;
@@ -41,7 +44,9 @@ export function analyzeGeometry(positions, opts = {}) {
     if (rv.volume > 0 && rv.openFraction < 0.02 && Math.abs(rv.volume / mp.volume - 1) < 0.6) ray = rv;
   }
   onProgress(0.85, 'Buoyancy elements');
-  let els = buoyancyElements(volumeSource === 'voxel' ? solid : wet, opts.buoyancyResolution ?? 14);
+  // sealed hull: the elements must displace the filled cavity too, or the
+  // partly- and fully-submerged buoyancy paths disagree
+  let els = buoyancyElements(sealedGrid ?? (volumeSource === 'voxel' ? solid : wet), opts.buoyancyResolution ?? 14);
   if (ray) {
     // keep the voxel distribution, match the integrated volume and centre of buoyancy
     const sv0 = els.reduce((t, e) => t + e.v, 0);
@@ -66,6 +71,8 @@ export function analyzeGeometry(positions, opts = {}) {
     solidCentroid: mp.centroid,
     volumeSource: sealed ? 'sealed-hull' : ray ? 'ray' : volumeSource,
     projections: proj,
+    projectionRef: mp.centroid,
+    projCols,
     buoyEls: els,
     contacts,
     wet: { nx: wet.nx, ny: wet.ny, nz: wet.nz, cell: wet.cell, origin: wet.origin, data: wet.data },

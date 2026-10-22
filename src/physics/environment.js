@@ -76,6 +76,8 @@ export class Environment {
     this.configure(cfg);
     this.time = 0;
     this.gust = [0, 0, 0];
+    this.gustRaw = [0, 0, 0];
+    this.gustAccel = [0, 0, 0];
   }
   configure(cfg) {
     this.cfg = { ...DEFAULT_ENVIRONMENT, ...cfg, pool: { ...DEFAULT_POOL, ...(cfg.pool || {}) }, turbulence: { ...DEFAULT_ENVIRONMENT.turbulence, ...(cfg.turbulence || {}) }, waves: { ...DEFAULT_ENVIRONMENT.waves, ...(cfg.waves || {}) }, contact: { ...DEFAULT_ENVIRONMENT.contact, ...(cfg.contact || {}) } };
@@ -88,11 +90,44 @@ export class Environment {
     this.gm.forEach((g, i) => { g.sigma = t.sigma * (i === 2 ? 0.5 : 1); g.tau = t.tau; });
     const w = this.cfg.waves;
     this.waveOmega = w.period > 0 ? (2 * Math.PI) / w.period : 0;
-    this.waveK = (this.waveOmega * this.waveOmega) / this.g; // deep-water dispersion
+    // finite-depth linear dispersion omega^2 = g k tanh(k h), solved per floor depth
+    this.kCache = new Map();
+    this.waveK = this.waveNumber(this.floor.maxDepth);
     const b = (w.direction * Math.PI) / 180;
     this.waveDir = [Math.cos(b), Math.sin(b)];
     this.buildPressureTable();
   }
+
+  // wave number for water depth h: Newton on f(k) = g k tanh(k h) - omega^2
+  waveNumber(h) {
+    const w = this.waveOmega, g = this.g;
+    if (!(w > 0)) return 0;
+    const key = Math.round(Math.max(0.01, h) * 200);
+    const c = this.kCache?.get(key);
+    if (c !== undefined) return c;
+    const hh = key / 200;
+    let k = (w * w) / g / Math.sqrt(Math.tanh((w * w * hh) / g)); // Eckart/Fenton start
+    for (let i = 0; i < 20; i++) {
+      const th = Math.tanh(k * hh);
+      const f = g * k * th - w * w, df = g * th + g * k * hh * (1 - th * th);
+      const dk = f / df;
+      k -= dk;
+      if (Math.abs(dk) < 1e-12 * k) break;
+    }
+    this.kCache?.set(key, k);
+    return k;
+  }
+  // Linear-wave depth profiles at depth z (>= 0, down) over a floor at h:
+  // horizontal velocity cosh(k(h-z))/sinh(kh), vertical sinh(k(h-z))/sinh(kh),
+  // dynamic pressure cosh(k(h-z))/cosh(kh); written with exponentials so deep water does not overflow.
+  waveProfile(x, z) {
+    const h = Math.max(0.02, this.floor.depthAt(x));
+    const k = this.waveNumber(h);
+    const zz = clamp(z, 0, h);
+    const e1 = Math.exp(-k * zz), e2 = Math.exp(-k * (2 * h - zz)), e3 = Math.exp(-2 * k * h);
+    return { k, fu: (e1 + e2) / (1 - e3 + 1e-300), fw: (e1 - e2) / (1 - e3 + 1e-300), fp: (e1 + e2) / (1 + e3) };
+  }
+  wavePhase(x, y, k, t) { return k * (x * this.waveDir[0] + y * this.waveDir[1]) - this.waveOmega * t; }
 
   // ---- geometry ----
   floorDepth(x) { return this.floor.depthAt(x); }
@@ -109,7 +144,8 @@ export class Environment {
   }
   buildPressureTable() {
     this.salinityPSU = Math.max(0, +this.cfg.salinity || 0);
-    this.T68 = toT68(+this.cfg.temperature || 20);
+    const tC = Number.isFinite(+this.cfg.temperature) ? +this.cfg.temperature : 20;
+    this.T68 = toT68(tC);
     const zmax = Math.max(1, this.floor.maxDepth) * 1.02 + 2;
     const N = 512, dz = zmax / N;
     const p = new Float64Array(N + 1);
@@ -133,21 +169,29 @@ export class Environment {
   pressureAt(x, y, z) {
     const eta = this.surfaceElevation(x, y);
     if (z <= -eta) return 0; // above the local free surface
-    const zEff = eta ? z + eta * Math.exp(-this.waveK * Math.max(0, z)) : z;
+    const zEff = eta ? z + eta * this.waveProfile(x, Math.max(0, z)).fp : z;
     return this.pressureGauge(zEff);
   }
   absolutePressureAt(x, y, z) { return this.pAtm + this.pressureAt(x, y, z); }
 
   step(dt) {
     this.time += dt;
-    for (let i = 0; i < 3; i++) this.gust[i] = this.gm[i].step(dt);
+    // Gauss-Markov turbulence through a short first-order filter so the gust
+    // velocity is differentiable (its acceleration drives the inertial terms)
+    const ts = Math.max(0.05, Math.min(0.25, (this.cfg.turbulence.tau || 1) / 4));
+    for (let i = 0; i < 3; i++) {
+      this.gustRaw[i] = this.gm[i].step(dt);
+      const a = (this.gustRaw[i] - this.gust[i]) / ts;
+      this.gust[i] += a * Math.min(1, dt / ts);
+      this.gustAccel[i] = (this.gustRaw[i] - this.gust[i]) / ts;
+    }
   }
   // free-surface elevation (positive up) at horizontal position
   surfaceElevation(x, y, t = this.time) {
     const w = this.cfg.waves;
     if (!(w.amplitude > 0) || !this.waveOmega) return 0;
-    const ph = this.waveK * (x * this.waveDir[0] + y * this.waveDir[1]) - this.waveOmega * t;
-    return w.amplitude * Math.cos(ph);
+    const k = this.floor.sloped ? this.waveNumber(this.floor.depthAt(x)) : this.waveK;
+    return w.amplitude * Math.cos(this.wavePhase(x, y, k, t));
   }
   // fluid velocity (NED) at a world point; z positive down
   fluidVelocity(x, y, z, t = this.time) {
@@ -155,13 +199,39 @@ export class Environment {
     let vx = c[0] + this.gust[0], vy = c[1] + this.gust[1], vz = c[2] + this.gust[2];
     const w = this.cfg.waves;
     if (w.amplitude > 0 && this.waveOmega) {
-      const ph = this.waveK * (x * this.waveDir[0] + y * this.waveDir[1]) - this.waveOmega * t;
-      const decay = Math.exp(-this.waveK * Math.max(0, z));
-      const uh = w.amplitude * this.waveOmega * decay * Math.cos(ph);
+      const pr = this.waveProfile(x, Math.max(0, z));
+      const ph = this.wavePhase(x, y, pr.k, t);
+      const aw = w.amplitude * this.waveOmega;
+      const uh = aw * pr.fu * Math.cos(ph);
       vx += uh * this.waveDir[0];
       vy += uh * this.waveDir[1];
-      vz += -w.amplitude * this.waveOmega * decay * Math.sin(ph); // NED (down positive)
+      vz += -aw * pr.fw * Math.sin(ph); // NED (down positive)
     }
     return [vx, vy, vz];
+  }
+  // Fluid-particle acceleration Du/Dt (NED) at a world point: turbulence plus
+  // the waves' local du/dt and convective (u.grad)u terms (analytic, linear
+  // profiles). The convective part carries the second-order mean pressure
+  // (Bernoulli -rho u^2 / 2) that keeps a neutrally buoyant body from sinking in waves.
+  fluidAccel(x, y, z, t = this.time) {
+    let ax = this.gustAccel[0], ay = this.gustAccel[1], az = this.gustAccel[2];
+    const w = this.cfg.waves;
+    if (w.amplitude > 0 && this.waveOmega) {
+      const pr = this.waveProfile(x, Math.max(0, z));
+      const ph = this.wavePhase(x, y, pr.k, t), sn = Math.sin(ph), cs = Math.cos(ph);
+      const A = w.amplitude, om = this.waveOmega, k = pr.k, d = this.waveDir;
+      const aw2 = A * om * om;
+      const c = this.cfg.current;
+      const us = A * om * pr.fu * cs + (c[0] + this.gust[0]) * d[0] + (c[1] + this.gust[1]) * d[1]; // advecting speed along the wave
+      const wz = -A * om * pr.fw * sn + c[2] + this.gust[2];
+      // d/ds and d/dz (z down) of the wave velocity: u_h = A w fu cos, u_z = -A w fw sin
+      const duh = -A * om * k * pr.fu * sn, duhz = -A * om * k * pr.fw * cs;
+      const dwz = -A * om * k * pr.fw * cs, dwzz = A * om * k * pr.fu * sn;
+      const ah = aw2 * pr.fu * sn + us * duh + wz * duhz;
+      ax += ah * d[0];
+      ay += ah * d[1];
+      az += aw2 * pr.fw * cs + us * dwz + wz * dwzz;
+    }
+    return [ax, ay, az];
   }
 }

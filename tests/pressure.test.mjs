@@ -220,7 +220,7 @@ test('values from the file survive when the simulator starts simulating a parame
   const old = { schema: 'duburi.vehicle', params: { FRAME_CONFIG: 2 }, extraParams: { FS_LEAK_ENABLE: 0, COMPASS_OFS_X: 306.1 } };
   const a = normalizeConfig(JSON.parse(JSON.stringify(old)));
   assert.equal(a.params.FS_LEAK_ENABLE, 0);
-  assert.ok(!('FS_LEAK_ENABLE' in a.extraParams) && a.extraParams.COMPASS_OFS_X === 306.1);
+  assert.ok(!('FS_LEAK_ENABLE' in a.extraParams) && a.params.COMPASS_OFS_X === 306.1); // every ArduSub param is now defined
   assert.equal(allParamsForExport(a).FS_LEAK_ENABLE, 0);
   // saved again after the update with the new default persisted: the file value still wins
   const b = normalizeConfig({ ...old, params: { FRAME_CONFIG: 2, FS_LEAK_ENABLE: 1 } });

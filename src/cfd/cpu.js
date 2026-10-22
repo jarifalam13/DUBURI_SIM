@@ -188,10 +188,14 @@ export class LBMCPU {
   }
 
   // Momentum-exchange force and moment (about ref) on the solid, for the
-  // current post-collision state (lattice units).
+  // current post-collision state (lattice units). On a moving (spinning) wall
+  // the Galilean-invariant form F = sum[(c_o - u_w) f_o - (c_i - u_w) f_i] is
+  // used (Wen et al. 2014; Krueger et al. 2017 sec. 11.4.4): the conventional
+  // sum less u_w (f_o - f_i) per link, u_w = omega x l at the wall point.
   force() {
     const { nx, ny, N, A } = this;
-    const ref = this.p.ref;
+    const ref = this.p.ref, om = this.p.omega;
+    const moving = om[0] !== 0 || om[1] !== 0 || om[2] !== 0;
     const F = [0, 0, 0], M = [0, 0, 0];
     const { cells, dirs } = this.links;
     for (let k = 0; k < cells.length; k++) {
@@ -199,8 +203,13 @@ export class LBMCPU {
       const x = id % nx, y = Math.floor(id / nx) % ny, z = Math.floor(id / (nx * ny));
       const qq = this.wallQ(id, i);
       const lx = x - qq * CX[i] - ref[0], ly = y - qq * CY[i] - ref[1], lz = z - qq * CZ[i] - ref[2];
-      const s = A[o * N + id] + this.wallValue(A, id, x, y, z, i) + 2 * W[i];
-      const dx = -CX[i] * s, dy = -CY[i] * s, dz = -CZ[i] * s; // c_opp * s
+      const go = A[o * N + id], gi = this.wallValue(A, id, x, y, z, i);
+      const s = go + gi + 2 * W[i];
+      let dx = -CX[i] * s, dy = -CY[i] * s, dz = -CZ[i] * s; // c_opp * s
+      if (moving) {
+        const d = go - gi; // f_o - f_i (the weights cancel)
+        dx -= (om[1] * lz - om[2] * ly) * d; dy -= (om[2] * lx - om[0] * lz) * d; dz -= (om[0] * ly - om[1] * lx) * d;
+      }
       F[0] += dx; F[1] += dy; F[2] += dz;
       M[0] += ly * dz - lz * dy; M[1] += lz * dx - lx * dz; M[2] += lx * dy - ly * dx;
     }

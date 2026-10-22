@@ -424,6 +424,42 @@ export function projections(grid, ref = [0, 0, 0]) {
   return out;
 }
 
+// Silhouette columns of the projections (one entry per hit column: its two
+// transverse coordinates), so the strip-theory integrals can be re-evaluated
+// about any reference point (e.g. the CG) without the voxel grid.
+export function projectionColumns(grid) {
+  const { nx, ny, nz, cell } = grid;
+  const cx = [], cy = [], cz = [];
+  for (let k = 0; k < nz; k++)
+    for (let j = 0; j < ny; j++) {
+      let hit = false;
+      for (let i = 0; i < nx && !hit; i++) hit = !!grid.data[i + nx * (j + ny * k)];
+      if (hit) { const c = grid.center(0, j, k); cx.push(c[1], c[2]); }
+    }
+  for (let k = 0; k < nz; k++)
+    for (let i = 0; i < nx; i++) {
+      let hit = false;
+      for (let j = 0; j < ny && !hit; j++) hit = !!grid.data[i + nx * (j + ny * k)];
+      if (hit) { const c = grid.center(i, 0, k); cy.push(c[0], c[2]); }
+    }
+  for (let j = 0; j < ny; j++)
+    for (let i = 0; i < nx; i++) {
+      let hit = false;
+      for (let k = 0; k < nz && !hit; k++) hit = !!grid.data[i + nx * (j + ny * k)];
+      if (hit) { const c = grid.center(i, j, 0); cz.push(c[0], c[1]); }
+    }
+  return { dA: cell * cell, x: Float32Array.from(cx), y: Float32Array.from(cy), z: Float32Array.from(cz) };
+}
+// projections() from stored columns about ref (same integrals, same result)
+export function projectionsFromColumns(cols, ref = [0, 0, 0]) {
+  const dA = cols.dA, out = { area: [0, 0, 0], k3: { roll: 0, pitch: 0, yaw: 0 } };
+  const a3 = (v) => Math.abs(v) ** 3 * dA;
+  for (let n = 0; n < cols.x.length; n += 2) { out.area[0] += dA; out.k3.yaw += a3(cols.x[n] - ref[1]); out.k3.pitch += a3(cols.x[n + 1] - ref[2]); }
+  for (let n = 0; n < cols.y.length; n += 2) { out.area[1] += dA; out.k3.yaw += a3(cols.y[n] - ref[0]); out.k3.roll += a3(cols.y[n + 1] - ref[2]); }
+  for (let n = 0; n < cols.z.length; n += 2) { out.area[2] += dA; out.k3.pitch += a3(cols.z[n] - ref[0]); out.k3.roll += a3(cols.z[n + 1] - ref[1]); }
+  return out;
+}
+
 // Coarse buoyancy elements: groups of fine cells, each with volume, centroid and
 // half-extent, used for surface-aware buoyancy at run time.
 // Displaced volume and its centroid by exact integration along rays. Along a

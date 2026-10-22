@@ -25,11 +25,14 @@ export function shapeGeometry(shape = DEFAULT_SHAPE, thrusters = []) {
   if (s.type === 'box') {
     part('Hull', '#cfd8dc', (o) => box(o, [0, 0, 0], [L, W, H]));
   } else if (s.type === 'torpedo') {
-    const D = Math.max(0.03, +s.diameter), body = Math.max(0.01, L - D);
+    // nose and tail caps protrude 0.75 D and 0.55 D beyond the cylinder, so the
+    // overall length is exactly L (caps shortened when L < 1.3 D)
+    const D = Math.max(0.03, +s.diameter), body = Math.max(0.01, L - 1.3 * D);
+    const kc = Math.min(1, (L - body) / (1.3 * D));
     part('Hull', '#cfd8dc', (o) => {
       cylinder(o, [0, 0, 0], [1, 0, 0], D / 2, body, 40);
-      ellipsoid(o, [body / 2, 0, 0], [D * 0.75, D / 2, D / 2], 16, 32); // nose
-      ellipsoid(o, [-body / 2, 0, 0], [D * 0.55, D / 2, D / 2], 16, 32); // tail
+      ellipsoid(o, [body / 2, 0, 0], [D * 0.75 * kc, D / 2, D / 2], 16, 32); // nose
+      ellipsoid(o, [-body / 2, 0, 0], [D * 0.55 * kc, D / 2, D / 2], 16, 32); // tail
     });
   } else {
     // open frame in the style of a BlueROV2, scaled to L x W x H

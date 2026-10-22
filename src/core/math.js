@@ -10,6 +10,10 @@ export const RAD = 180 / Math.PI;
 export const GRAVITY_MSS = 9.80665; // ArduPilot GRAVITY_MSS
 
 export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+// AP_Math.cpp:267 constrain_value_line(): NaN maps to the midpoint (used by the ArduSub port only;
+// the physics keeps plain clamp so a NaN in the plant is not hidden)
+export const constrainFloat = (v, lo, hi) => (Number.isNaN(v) ? (lo + hi) / 2 : v < lo ? lo : v > hi ? hi : v);
+export const safeSqrt = (v) => (v > 0 ? Math.sqrt(v) : 0); // AP_Math safe_sqrt (NaN/negative -> 0)
 export const isZero = (v) => Math.abs(v) < 1.1920929e-7; // FLT_EPSILON like ArduPilot's is_zero
 export const isPositive = (v) => v >= 1.1920929e-7;
 export const isNegative = (v) => v <= -1.1920929e-7;
@@ -29,9 +33,10 @@ export function wrap2PI(a) {
   return r;
 }
 export function wrap180cd(cd) {
+  // AP_Math.cpp:157 wrap_180_cd = wrap_360_cd(), minus 36000 if > 18000 -> (-18000, 18000]
   let r = cd % 36000;
+  if (r < 0) r += 36000;
   if (r > 18000) r -= 36000;
-  if (r < -18000) r += 36000;
   return r;
 }
 export function wrap360cd(cd) {
@@ -162,24 +167,22 @@ export function qToEuler(q) {
 }
 export function qFromAxisAngleVec(v) {
   // ArduPilot Quaternion::from_axis_angle(Vector3f v) where |v| = angle
+  // quaternion.cpp:470: is_zero(theta) (FLT_EPSILON) gives the identity
   const theta = vlen(v);
-  if (theta < 1e-12) return [1, 0, 0, 0];
+  if (isZero(theta)) return [1, 0, 0, 0];
   return qFromAxisAngle(vscale(v, 1 / theta), theta);
 }
 export function qFromAxisAngle(axis, theta) {
-  if (Math.abs(theta) < 1e-12) return [1, 0, 0, 0];
+  if (isZero(theta)) return [1, 0, 0, 0];
   const st2 = Math.sin(0.5 * theta);
   return [Math.cos(0.5 * theta), axis[0] * st2, axis[1] * st2, axis[2] * st2];
 }
 export function qToAxisAngle(q) {
-  // ArduPilot Quaternion::to_axis_angle -> rotation vector
-  let l = Math.hypot(q[1], q[2], q[3]);
-  let v = [q[1], q[2], q[3]];
-  if (l > 1e-12) {
-    v = vscale(v, 1 / l);
-    return vscale(v, wrapPI(2 * Math.atan2(l, q[0])));
-  }
-  return [0, 0, 0];
+  // ArduPilot Quaternion::to_axis_angle -> rotation vector (quaternion.cpp:497: raw (q2,q3,q4) when is_zero(l))
+  const l = Math.hypot(q[1], q[2], q[3]);
+  const v = [q[1], q[2], q[3]];
+  if (!isZero(l)) return vscale(v, wrapPI(2 * Math.atan2(l, q[0])) / l);
+  return v;
 }
 
 // ---------------- dense matrices (row-major, array of rows) ----------------

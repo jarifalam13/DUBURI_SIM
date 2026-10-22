@@ -20,7 +20,7 @@
 
 import { VoxelGrid, voxelizeSolid, voxelizeSurface, surfaceNets } from '../geometry/mesh.js';
 import { LBMCPU } from './cpu.js';
-import { C } from './d3q19.js';
+import { Q, C, W, SMAG_K } from './d3q19.js';
 import { gridConvergence } from '../core/convergence.js';
 
 export const DOFS = [
@@ -316,6 +316,53 @@ export function caseSettings(cs, Re) {
   };
 }
 
+// ---- LES diagnostic: Smagorinsky eddy viscosity next to the hull ----
+// The Reynolds fit C(Re) = C_inf + K / Re needs the viscosity the runs really
+// have; with the LES closure that is nu (1 + nu_t / nu). Fluid cells with a
+// boundary link:
+export function nearWallCells(cs) {
+  const { nx, ny, nz, mask } = cs;
+  const out = [];
+  for (let z = 1; z < nz - 1; z++) for (let y = 1; y < ny - 1; y++) for (let x = 1; x < nx - 1; x++) {
+    const id = x + nx * (y + ny * z);
+    if (mask[id]) continue;
+    for (let i = 1; i < Q; i++) if (mask[(x - C[i][0]) + nx * ((y - C[i][1]) + ny * (z - C[i][2]))]) { out.push(id); break; }
+  }
+  return Int32Array.from(out);
+}
+/**
+ * Mean and max of nu_t / nu over `cells`, from post-collision populations.
+ * get(id, g) fills g[0..18] with the shifted populations g = f - w of cell id.
+ * The regularised collision keeps (1 - 1/tau) of the non-equilibrium stress, so
+ * the pre-collision stress (which sets tau) follows by fixed-point iteration.
+ */
+export function eddyViscosityRatio(get, cells, tau0, smag) {
+  const smagK = SMAG_K * smag * smag;
+  if (!(smagK > 0) || !cells.length) return { mean: 0, max: 0, cells: cells.length };
+  const g = new Float64Array(Q);
+  let sum = 0, max = 0;
+  for (const id of cells) {
+    get(id, g);
+    let rho = 1, jx = 0, jy = 0, jz = 0;
+    for (let i = 0; i < Q; i++) { rho += g[i]; jx += C[i][0] * g[i]; jy += C[i][1] * g[i]; jz += C[i][2] * g[i]; }
+    const ux = jx / rho, uy = jy / rho, uz = jz / rho, uu = ux * ux + uy * uy + uz * uz;
+    let xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0;
+    for (let i = 0; i < Q; i++) {
+      const c = C[i], cu = c[0] * ux + c[1] * uy + c[2] * uz;
+      const ne = g[i] - W[i] * (rho - 1 + rho * (3 * cu + 4.5 * cu * cu - 1.5 * uu));
+      xx += c[0] * c[0] * ne; yy += c[1] * c[1] * ne; zz += c[2] * c[2] * ne; xy += c[0] * c[1] * ne; xz += c[0] * c[2] * ne; yz += c[1] * c[2] * ne;
+    }
+    const qPost = Math.sqrt(xx * xx + yy * yy + zz * zz + 2 * (xy * xy + xz * xz + yz * yz));
+    let qn = qPost, tau = tau0;
+    for (let k = 0; k < 30; k++) { tau = 0.5 * (tau0 + Math.sqrt(tau0 * tau0 + (smagK * qn) / rho)); qn = qPost / Math.abs(1 - 1 / tau); }
+    tau = 0.5 * (tau0 + Math.sqrt(tau0 * tau0 + (smagK * qn) / rho));
+    const r = (tau - tau0) / (tau0 - 0.5);
+    sum += r; if (r > max) max = r;
+  }
+  return { mean: sum / cells.length, max, cells: cells.length };
+}
+export const LES_WARN = 0.2; // near-wall nu_t / nu above which the Reynolds fit is flagged
+
 export function rampFactor(step, st) {
   const t = step / st.Tc;
   return t >= st.rampT ? 1 : 0.5 * (1 - Math.cos((Math.PI * t) / st.rampT));
@@ -336,15 +383,17 @@ export function windowMean(samples, from, to) {
   for (const x of s) for (let k = 0; k < 3; k++) { F[k] += x.F[k] / s.length; M[k] += x.M[k] / s.length; }
   return { F, M, n: s.length };
 }
-// converged when the last two averaging windows agree within tol
+// converged when the last two averaging windows agree within tol; a run always
+// ends at tMax, however few force samples its windows hold (the GPU runner gets
+// at most one readback per frame)
 export function convergence(samples, step, cs, st) {
   const W = st.win * st.Tc;
-  if (step < st.tMin * st.Tc) return { done: false, rel: NaN };
-  const a = windowMean(samples, step - W, step), b = windowMean(samples, step - 2 * W, step - W);
-  if (!a || !b || a.n < 4 || b.n < 4) return { done: false, rel: NaN };
-  const pa = primary(a, cs, st), pb = primary(b, cs, st);
-  const rel = Math.abs(pa - pb) / Math.max(Math.abs(pa), 1e-12);
-  return { done: rel < st.tol || step >= st.tMax * st.Tc, rel, converged: rel < st.tol };
+  const a = step >= st.tMin * st.Tc ? windowMean(samples, step - W, step) : null, b = a ? windowMean(samples, step - 2 * W, step - W) : null;
+  const ok = a && b && a.n >= 4 && b.n >= 4;
+  const rel = ok ? Math.abs(primary(a, cs, st) - primary(b, cs, st)) / Math.max(Math.abs(primary(a, cs, st)), 1e-12) : NaN;
+  if (step >= st.tMax * st.Tc) return { done: true, converged: ok && rel < st.tol, rel };
+  if (!ok) return { done: false, rel: NaN };
+  return { done: rel < st.tol, rel, converged: rel < st.tol };
 }
 
 /** Dimensionless body-frame coefficients (6) of a finished run, sign-normalised. */
@@ -358,49 +407,124 @@ export function runCoefficients(cs, st, mean) {
 
 export { gridConvergence };
 
+// Spin damping comes from a frozen mask with a moving-wall condition: the hull
+// never sweeps through the water, so the wake history is not that of a turning
+// body (a quasi-steady approximation; exact only for bodies of revolution).
+// Its uncertainty gets this model term on top of the grid uncertainty.
+export const SPIN_MODEL_UNCERTAINTY = 0.3;
+
+/**
+ * Damping must not inject energy: the symmetric part of D (scaled so that every
+ * DOF has the units of a speed, s = [1, 1, 1, L, L, L]) is projected onto the
+ * positive semidefinite cone by clipping its negative eigenvalues (Fossen 2011
+ * sec. 6.4); the skew part does no work and is kept. Returns { D, clipped }.
+ */
+export function dissipative(D, L = 1) {
+  const s = [1, 1, 1, L, L, L];
+  const n = 6;
+  const S = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (0.5 * (D[i][j] + D[j][i])) / (s[i] * s[j])));
+  const { values, vectors } = jacobiEigen(S);
+  let neg = 0, scale = 0;
+  for (const v of values) { if (v < 0) neg += -v; scale = Math.max(scale, Math.abs(v)); }
+  if (!(neg > 1e-12 * Math.max(scale, 1e-30))) return { D: D.map((r) => r.slice()), clipped: 0 };
+  const out = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    let v = 0;
+    for (let k = 0; k < n; k++) if (values[k] > 0) v += vectors[i][k] * values[k] * vectors[j][k];
+    out[i][j] = v * s[i] * s[j] + 0.5 * (D[i][j] - D[j][i]);
+  }
+  return { D: out, clipped: neg / Math.max(scale, 1e-30) };
+}
+// cyclic Jacobi eigen-decomposition of a small symmetric matrix (columns of vectors)
+function jacobiEigen(A0) {
+  const n = A0.length, A = A0.map((r) => r.slice());
+  const V = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)));
+  for (let sweep = 0; sweep < 60; sweep++) {
+    let off = 0;
+    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += A[p][q] * A[p][q];
+    if (off < 1e-30) break;
+    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) {
+      if (Math.abs(A[p][q]) < 1e-300) continue;
+      const th = (A[q][q] - A[p][p]) / (2 * A[p][q]);
+      const t = Math.sign(th || 1) / (Math.abs(th) + Math.sqrt(th * th + 1));
+      const c = 1 / Math.sqrt(t * t + 1), sn = t * c;
+      for (let k = 0; k < n; k++) { const akp = A[k][p], akq = A[k][q]; A[k][p] = c * akp - sn * akq; A[k][q] = sn * akp + c * akq; }
+      for (let k = 0; k < n; k++) { const apk = A[p][k], aqk = A[q][k]; A[p][k] = c * apk - sn * aqk; A[q][k] = sn * apk + c * aqk; }
+      for (let k = 0; k < n; k++) { const vkp = V[k][p], vkq = V[k][q]; V[k][p] = c * vkp - sn * vkq; V[k][q] = sn * vkp + c * vkq; }
+    }
+  }
+  return { values: A.map((r, i) => r[i]), vectors: V };
+}
+
 /**
  * Assemble damping matrices from finished runs.
- * runs: [{ dof, sign, Re, N, C: [6] }]  (several N per case = grid study)
- * opts: { rho, nu, ellRef, linearExtra: [6] (added to the diagonal) }
+ * runs: [{ dof, sign, Re, N, C: [6], nuT?: { mean, max }, wall? }]  (several N per case = grid study)
+ * opts: { rho, nu, ellRef, linearExtra: [6] (added to the diagonal), pFormal }
  */
-export function assemble(runs, { rho, nu, ellRef: L, linearExtra = [0, 0, 0, 0, 0, 0] }) {
+export function assemble(runs, { rho, nu, ellRef: L, linearExtra = [0, 0, 0, 0, 0, 0], pFormal } = {}) {
   const DQ = Array.from({ length: 6 }, () => [0, 0, 0, 0, 0, 0]);
   const DL = Array.from({ length: 6 }, () => [0, 0, 0, 0, 0, 0]);
   const details = {};
+  const warnings = [];
   const mean6 = (list) => [0, 1, 2, 3, 4, 5].map((i) => list.reduce((a, c) => a + c[i], 0) / list.length);
+  // formal order of the wall treatment: second order with interpolated (Bouzidi) walls, first on a staircase
+  const pF = pFormal ?? (runs.length && runs.every((r) => !r.wall || r.wall === 'interpolated') ? 2 : 1);
   DOFS.forEach((dof, j) => {
     const rs = runs.filter((r) => r.dof === dof.key);
     if (!rs.length) return;
     const Res = [...new Set(rs.map((r) => r.Re))].sort((a, b) => a - b);
-    const coef = {}, grid = {};
+    const signs = [...new Set(rs.map((r) => r.sign ?? 1))];
+    const coef = {}, grid = {}, ReFit = {}, les = {};
     for (const Re of Res) {
       const atRe = rs.filter((r) => r.Re === Re);
       const Ns = [...new Set(atRe.map((r) => r.N ?? 0))].sort((a, b) => b - a);
       const perN = Ns.map((N) => ({ h: N ? 1 / N : 1, C: mean6(atRe.filter((r) => (r.N ?? 0) === N).map((r) => r.C)) }));
+      let extrapolated = false;
       if (perN.length >= 2) {
         coef[Re] = [0, 1, 2, 3, 4, 5].map((i) => {
-          const g = gridConvergence(perN.map((x) => ({ h: x.h, v: x.C[i] })));
-          if (i === j) grid[Re] = g;
-          return g.status === 'monotonic' || g.status === 'two grids' || g.status === 'converged' ? g.value : g.fine;
+          const g = gridConvergence(perN.map((x) => ({ h: x.h, v: x.C[i] })), { pFormal: pF });
+          const ok = g.status === 'monotonic' || g.status === 'two grids' || g.status === 'converged';
+          if (i === j) { grid[Re] = g; extrapolated = ok; }
+          return ok ? g.value : g.fine;
         });
       } else coef[Re] = perN[0].C;
+      // effective Reynolds number of the fit: the LES eddy viscosity (measured
+      // next to the hull on the finest grid) adds to the molecular one. It scales
+      // with the cell size squared, so a grid-extrapolated value has none.
+      const fine = atRe.filter((r) => (r.N ?? 0) === Ns[0] && r.nuT);
+      const nt = fine.length ? { mean: fine.reduce((a, r) => a + r.nuT.mean, 0) / fine.length, max: Math.max(...fine.map((r) => r.nuT.max)) } : null;
+      les[Re] = nt;
+      ReFit[Re] = nt && !extrapolated ? Re / (1 + nt.mean) : Re;
+      if (nt && nt.mean > LES_WARN && !extrapolated) warnings.push(`${dof.label} at Re ${Re}: the LES eddy viscosity next to the hull averages ${(nt.mean * 100).toFixed(0)}% of the molecular viscosity (max ${(nt.max * 100).toFixed(0)}%); the Reynolds fit uses the effective Re ${ReFit[Re].toFixed(0)}.`);
     }
     let Cinf, K;
     if (Res.length >= 2) {
       const lo = Res[0], hi = Res[Res.length - 1];
-      const Cl = coef[lo], Ch = coef[hi];
-      K = Cl.map((v, i) => (v - Ch[i]) / (1 / lo - 1 / hi));
-      Cinf = Ch.map((v, i) => v - K[i] / hi);
-      // drag must not grow towards high Re (else keep the high-Re value) and must oppose the motion
-      if (K[j] > 0 || Cinf[j] > 0) { K[j] = Math.min(0, K[j]); Cinf[j] = Math.min(Ch[j], Ch[j] - K[j] / hi); }
+      const Cl = coef[lo], Ch = coef[hi], rl = ReFit[lo], rh = ReFit[hi];
+      K = Cl.map((v, i) => (v - Ch[i]) / (1 / rl - 1 / rh));
+      Cinf = Ch.map((v, i) => v - K[i] / rh);
+      // drag must not grow towards high Re (else keep the high-Re value) and must
+      // oppose the motion; a rejected diagonal fit drops the Re terms of the
+      // whole column, so no off-diagonal 1/Re term is left without its diagonal
+      if (K[j] > 0 || Cinf[j] > 0) {
+        const clampedK = K[j] > 0;
+        K[j] = Math.min(0, K[j]); Cinf[j] = Math.min(Ch[j], Ch[j] - K[j] / rh);
+        if (clampedK) for (let i = 0; i < 6; i++) if (i !== j) { Cinf[i] = Ch[i]; K[i] = 0; }
+      }
       for (let i = 0; i < 6; i++) if (i !== j && Math.abs(Cinf[i]) > 2 * Math.max(Math.abs(Cl[i]), Math.abs(Ch[i]))) { Cinf[i] = Ch[i]; K[i] = 0; }
-      details[dof.key] = { Re: Res, C: { [lo]: Cl, [hi]: Ch }, Cinf, K, grid };
+      details[dof.key] = { Re: Res, ReFit: Res.map((r) => ReFit[r]), C: { [lo]: Cl, [hi]: Ch }, Cinf, K, grid, les };
     } else {
       Cinf = coef[Res[0]]; K = [0, 0, 0, 0, 0, 0];
-      details[dof.key] = { Re: Res, C: { [Res[0]]: Cinf }, Cinf, K, grid };
+      details[dof.key] = { Re: Res, ReFit: Res.map((r) => ReFit[r]), C: { [Res[0]]: Cinf }, Cinf, K, grid, les };
     }
+    // a force even in the speed (lift on an asymmetric hull) and an odd one
+    // (drag) can only be told apart with both tow directions (the mean of
+    // sign * C keeps the odd part); with one direction the couplings are dropped
+    const both = signs.includes(1) && signs.includes(-1);
+    details[dof.key].couplings = both ? 'odd part of both tow directions' : 'not measured (one tow direction)';
     const s = dof.kind === 't' ? 1 : L;
     for (let i = 0; i < 6; i++) {
+      if (i !== j && !both) continue;
       const p = i < 3 ? 2 : 3;
       DQ[i][j] = -rho * s * s * L ** p * Cinf[i];
       DL[i][j] = -rho * s * L ** (p - 1) * K[i] * nu;
@@ -408,10 +532,19 @@ export function assemble(runs, { rho, nu, ellRef: L, linearExtra = [0, 0, 0, 0, 
     DQ[j][j] = Math.max(0, DQ[j][j]);
     DL[j][j] = Math.max(0, DL[j][j]) + (linearExtra[j] || 0);
     const gHi = grid[Res[Res.length - 1]];
-    details[dof.key].uncertainty = gHi ? gHi.gci : NaN;
+    const gci = gHi ? gHi.gci : NaN;
+    if (dof.kind === 'r') {
+      details[dof.key].approximation = 'frozen geometry (spin modelled by a moving-wall condition on a fixed hull)';
+      details[dof.key].uncertainty = Math.hypot(Number.isFinite(gci) ? gci : 0, SPIN_MODEL_UNCERTAINTY);
+    } else details[dof.key].uncertainty = gci;
+    details[dof.key].gridUncertainty = gci;
     details[dof.key].gridStatus = gHi ? gHi.status : 'single grid';
   });
-  return { DQ, DL, details };
+  // energy check on the assembled matrices
+  const pl = dissipative(DL, L), pq = dissipative(DQ, L);
+  if (pl.clipped > 1e-9) warnings.push(`The linear damping matrix was not dissipative (negative eigenvalue ${(pl.clipped * 100).toFixed(1)}% of the largest): its symmetric part was projected to positive semidefinite.`);
+  if (pq.clipped > 1e-9) warnings.push(`The quadratic damping couplings were too strong for the diagonal (negative eigenvalue ${(pq.clipped * 100).toFixed(1)}% of the largest): projected to positive semidefinite.`);
+  return { DQ: pq.D, DL: pl.D, details, warnings, pFormal: pF };
 }
 
 /**
@@ -437,9 +570,11 @@ export function runCPU(cs, Re, { onProgress = () => {}, sliceEvery = 0, maxSecon
     onProgress(msg);
     if ((Date.now() - t0) / 1000 > maxSeconds) { conv = { done: true, converged: false, rel: conv.rel }; break; }
   }
-  const W = st.win * st.Tc;
-  const mean = windowMean(samples, solver.steps - W, solver.steps);
-  return { Re, mean, steps: solver.steps, converged: !!conv.converged, rel: conv.rel, C: runCoefficients(cs, st, mean), history: decimate(samples.map((s) => [s.step / st.Tc, primary(s, cs, st)]), 240), seconds: (Date.now() - t0) / 1000, mlups: (cs.nx * cs.ny * cs.nz * solver.steps) / Math.max(1e-3, (Date.now() - t0) / 1000) / 1e6, field: snapshot ? solver.snapshot(snapshotStride(cs)) : null };
+  const Wn = st.win * st.Tc;
+  const mean = windowMean(samples, solver.steps - Wn, solver.steps) ?? { ...samples[samples.length - 1], n: 1 };
+  const NC = solver.N, A = solver.A;
+  const nuT = eddyViscosityRatio((id, g) => { for (let i = 0; i < Q; i++) g[i] = A[i * NC + id]; }, nearWallCells(cs), st.params.tau0, st.params.smag);
+  return { Re, mean, nuT, steps: solver.steps, converged: !!conv.converged, rel: conv.rel, C: runCoefficients(cs, st, mean), history: decimate(samples.map((s) => [s.step / st.Tc, primary(s, cs, st)]), 240), seconds: (Date.now() - t0) / 1000, mlups: (cs.nx * cs.ny * cs.nz * solver.steps) / Math.max(1e-3, (Date.now() - t0) / 1000) / 1e6, field: snapshot ? solver.snapshot(snapshotStride(cs)) : null };
 }
 
 export const snapshotStride = (cs) => (cs.nx * cs.ny * cs.nz > 1.5e6 ? 2 : 1);

@@ -126,8 +126,10 @@ test('coefficients map back to the body frame with the right signs', () => {
 
 test('assembly turns coefficients into Fossen damping matrices', () => {
   const rho = 1000, nu = 1e-6, L = 0.5;
-  // drag C = -0.3 - 50/Re in surge, a small surge->pitch coupling
-  const runs = [500, 2000].map((Re) => ({ dof: 'surge', sign: 1, Re, C: [-0.3 - 50 / Re, 0, 0, 0, 0.01, 0] }));
+  // drag C = -0.3 - 50/Re in surge, a small surge->pitch coupling (towed both
+  // ways: couplings need both directions), pitch and yaw spin damping
+  const runs = [1, -1].flatMap((sign) => [500, 2000].map((Re) => ({ dof: 'surge', sign, Re, C: [-0.3 - 50 / Re, 0, 0, 0, 0.01, 0] })));
+  runs.push(...[500, 2000].map((Re) => ({ dof: 'pitch', sign: 1, Re, C: [0, 0, 0, 0, -0.05, 0] })));
   runs.push(...[500, 2000].map((Re) => ({ dof: 'yaw', sign: 1, Re, C: [0, 0, 0, 0, 0, -0.02 - 4 / Re] })));
   const { DQ, DL } = assemble(runs, { rho, nu, ellRef: L });
   assert.ok(Math.abs(DQ[0][0] - rho * L * L * 0.3) < 1e-9);
