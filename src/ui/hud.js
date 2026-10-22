@@ -5,6 +5,40 @@
 import { RAD } from '../core/math.js';
 import { MODE } from '../ardusub/sub.js';
 
+const DEPTH_MODES = new Set([MODE.ALT_HOLD, MODE.POSHOLD, MODE.SURFACE, MODE.SURFTRAK, MODE.GUIDED, MODE.AUTO, MODE.CIRCLE].filter((m) => m !== undefined));
+
+// battery as the firmware sees it (sensors.battery), falling back to the plant's battery model
+export function batteryInfo(sim) {
+  const b = sim.sensors?.battery ?? sim.fw?.battery;
+  if (b && Number.isFinite(b.voltage)) return b;
+  const pb = sim.plant?.battery;
+  if (pb && Number.isFinite(pb.voltage)) return { voltage: pb.voltage, current: pb.current ?? 0, consumedMah: pb.consumedMah ?? 0, remainingPct: pb.remainingPct, healthy: true };
+  return null;
+}
+const FS_NAMES = { pilotInput: 'PILOT INPUT', leak: 'LEAK', internalPressure: 'INTERNAL PRESSURE', internalTemp: 'INTERNAL TEMP', temperature: 'INTERNAL TEMP', battery: 'BATTERY', batteryLow: 'BATTERY LOW', batteryCritical: 'BATTERY CRITICAL', gcs: 'GCS', ekf: 'EKF', sensors: 'SENSORS', crash: 'CRASH', terrain: 'TERRAIN', mainloop: 'CPU', baro: 'DEPTH SENSOR' };
+// every failsafe flag the firmware has raised (sub.failsafe booleans, as Sub::failsafe in Sub.h)
+export function activeFailsafes(sim, st = {}) {
+  const f = sim.fw?.failsafe || {}, out = [];
+  for (const [k, v] of Object.entries(f)) if (v === true && !/^last|Warn|warn|Tick|Ms$/.test(k)) out.push(FS_NAMES[k] ?? k.replace(/([A-Z])/g, ' $1').toUpperCase());
+  if (st.failsafe && !out.includes('PILOT INPUT')) out.unshift('PILOT INPUT');
+  return out;
+}
+// pre-arm check failures, cached (the checks are not free)
+const pfCache = new WeakMap();
+export function armingFailures(sim) {
+  const fw = sim.fw;
+  if (!fw) return [];
+  const c = pfCache.get(fw), now = fw.time ?? 0;
+  if (c && Math.abs(now - c.t) < 0.5) return c.v;
+  let v = [];
+  try {
+    const r = fw.armingCheckFailures?.() ?? fw.preArmFailures ?? fw.preArm?.();
+    v = Array.isArray(r) ? r.filter(Boolean).map(String) : r ? [String(r)] : [];
+  } catch { v = []; }
+  pfCache.set(fw, { t: now, v });
+  return v;
+}
+
 const INK = '#e3eef3', INK2 = 'rgba(227,238,243,0.62)', SHADOW = 'rgba(2,10,14,0.85)', ACC = '#5cc8e0', FOAM = '#ffb547', REV = '#4f8dff';
 
 export class HUD {
@@ -54,18 +88,30 @@ export class HUD {
       if (h > 90) this.depthTape(g, dx, (top + bottom) / 2, h, st, sim);
     }
     this.headingTape(g, cx, T + 26, Math.min(420, (R - L) * 0.6), st.yaw * RAD, st);
-    if (!small) this.speeds(g, L + 18, T + 70, sim, st);
+    if (!small) this.speeds(g, L + 18, T + 70, sim, st, extra);
+    else this.compactStatus(g, cx, T + 70, sim, extra);
     this.thrusterBars(g, L + 18, small ? T + 200 : B - 18, st, sim, small);
     this.messages(g, cx, B - (small ? 210 : 22), sim);
     // banners, most important first
     const bn = [];
     if (extra.paused) bn.push(['PAUSED', FOAM]);
-    if (st.failsafe) bn.push(['PILOT INPUT LOST', '#ff8a8a']);
+    const fsl = activeFailsafes(sim, st);
+    if (fsl.length) bn.push([`FAILSAFE · ${fsl.join(' · ')}`, '#ff8a8a']);
+    if (extra.gcsLinkDown) bn.push(['GCS LINK DOWN (simulated)', '#fab219']);
     const fl = sim.plant.flood, hull = sim.plant.m.hull;
     if (fl && fl.active && fl.volume > 0) bn.push([`FLOODING · ${(fl.volume * 1e6).toFixed(0)} mL IN THE HOUSING`, '#ff8a8a']);
     else if (hull && hull.rating > 0 && sim.plant.position[2] > hull.rating) bn.push([`BELOW RATED DEPTH (${hull.rating} m)`, '#ff8a8a']);
     if (sim.sensors.depthOverRange) bn.push([`DEPTH SENSOR OVER RANGE (${sim.sensors.spec.maxBar} bar)`, '#fab219']);
-    bn.slice(0, 3).forEach(([t, c], i) => this.banner(g, cx, T + 98 + i * 34, t, c));
+    if (!st.armed) { const pf = armingFailures(sim); if (pf.length) bn.push([`PREARM: ${pf[0]}${pf.length > 1 ? ` (+${pf.length - 1})` : ''}`, '#fab219']); }
+    bn.slice(0, 4).forEach(([t, c], i) => this.banner(g, cx, T + 98 + i * 34, t, c));
+  }
+
+  compactStatus(g, cx, y, sim) {
+    const b = batteryInfo(sim), parts = [];
+    if (b && b.healthy !== false) parts.push(`${b.voltage.toFixed(1)} V ${Number.isFinite(b.remainingPct) ? `${Math.round(b.remainingPct)}%` : ''}`);
+    const rf = sim.sensors?.rangefinder;
+    if (rf?.healthy) parts.push(`RNG ${rf.distance_m.toFixed(2)} m`);
+    if (parts.length) this.text(g, parts.join('   '), cx, y, INK2, 'center', '500 11px "IBM Plex Mono", monospace');
   }
 
   text(g, s, x, y, color = INK, align = 'left', font) {
@@ -170,14 +216,18 @@ export class HUD {
   }
 
   depthTape(g, x, cy, h, st, sim) {
-    const depth = sim.plant.position[2];
+    // tape, readout and target in ArduSub's own depth estimate (inertial nav / baro frame, what
+    // QGC and Cockpit show); the pool geometry below is placed from the true depth
+    const zUp = sim.sensors?.positionZUpCm;
+    const depth = Number.isFinite(zUp) ? -zUp / 100 : Number.isFinite(st.depth) ? st.depth : sim.plant.position[2];
+    const trueDepth = sim.plant.position[2];
     const span = 3, ppm = h / span;
     g.save();
     g.beginPath(); g.rect(x - 40, cy - h / 2, 80, h); g.clip();
     g.font = '500 11px "IBM Plex Mono", monospace';
     // pool floor below the vehicle (hatched) and the housing's rated depth
     const floorD = sim.env.floorDepth(sim.plant.position[0]);
-    const yf = cy + (floorD - depth) * ppm;
+    const yf = cy + (floorD - trueDepth) * ppm;
     if (yf < cy + h / 2) {
       g.fillStyle = 'rgba(255,181,71,0.10)'; g.fillRect(x - 40, yf, 80, cy + h / 2 - yf);
       g.strokeStyle = 'rgba(255,181,71,0.35)'; g.lineWidth = 1; g.beginPath();
@@ -187,7 +237,7 @@ export class HUD {
     }
     const rating = sim.plant.m.hull?.rating;
     if (rating > 0) {
-      const yr = cy + (rating - depth) * ppm;
+      const yr = cy + (rating - trueDepth) * ppm;
       if (yr > cy - h / 2 && yr < cy + h / 2) { g.setLineDash([5, 4]); this.line(g, x - 30, yr, x + 30, yr, '#ff8a8a', 1.5); g.setLineDash([]); }
     }
     const s0 = Math.floor((depth - span / 2) * 10) / 10;
@@ -198,9 +248,9 @@ export class HUD {
       if (major) this.text(g, (Math.abs(d) < 1e-6 ? 0 : d).toFixed(1), x - 6, yy + 4, INK2, 'right');
     }
     // surface line
-    const ys = cy + (0 - depth) * ppm;
+    const ys = cy + (0 - trueDepth) * ppm;
     this.line(g, x - 30, ys, x + 30, ys, ACC, 1.5);
-    if (st.armed && (st.mode === MODE.ALT_HOLD || st.mode === MODE.POSHOLD || st.mode === MODE.SURFACE)) {
+    if (st.armed && Number.isFinite(st.depthTarget) && DEPTH_MODES.has(st.mode)) {
       const yt = Math.max(cy - h / 2, Math.min(cy + h / 2, cy + (st.depthTarget - depth) * ppm));
       g.fillStyle = ACC; g.beginPath(); g.moveTo(x + 14, yt); g.lineTo(x + 24, yt - 6); g.lineTo(x + 24, yt + 6); g.closePath(); g.fill();
     }
@@ -209,6 +259,7 @@ export class HUD {
     g.beginPath(); g.roundRect(x - 44, cy - 13, 62, 26, 5); g.fill(); g.stroke();
     this.text(g, depth.toFixed(2), x - 13, cy + 5, INK, 'center', '600 14px "IBM Plex Mono", monospace');
     this.text(g, 'DEPTH m', x - 13, cy - h / 2 - 10, INK2, 'center', '500 10px "IBM Plex Mono", monospace');
+    this.text(g, `true ${trueDepth.toFixed(2)}`, x - 13, cy + 26, INK2, 'center', '500 10px "IBM Plex Mono", monospace');
     // climb arrow
     const climb = st.climb; // m/s up
     const len = Math.max(-1, Math.min(1, climb / 0.5)) * (h / 2 - 20);
@@ -218,7 +269,7 @@ export class HUD {
     this.text(g, `${climb >= 0 ? '▲' : '▼'} ${Math.abs(climb).toFixed(2)}`, x - 13, cy + h / 2 + 16, INK2, 'center', '500 11px "IBM Plex Mono", monospace');
   }
 
-  speeds(g, x, y, sim, st) {
+  speeds(g, x, y, sim, st, extra = {}) {
     const v = sim.plant.velocityBody, p = sim.plant.position;
     g.font = '500 12px "IBM Plex Mono", monospace';
     const rows = [
@@ -228,8 +279,18 @@ export class HUD {
       // what the pressure sensor reads and the depth ArduSub computes from it
       ['PRESSURE', Number.isFinite(sim.sensors.pressureMeas) ? `${(sim.sensors.pressureMeas / 1e5).toFixed(4)} bar` : '—'],
       ['SENSOR', `${sim.sensors.depthMeasured.toFixed(2)} m`],
-      ['GAIN', `${Math.round(st.gain * 100)} %`], ['LIGHTS', `${Math.round(st.lights[0])} %`],
+      ['GAIN', `${Math.round(st.gain * 100)} %`], ['LIGHTS', `${Math.round(st.lights?.[0] ?? 0)} %`],
     ];
+    const b = batteryInfo(sim);
+    if (b) {
+      rows.push(['BATTERY', b.healthy === false ? 'no monitor' : `${b.voltage.toFixed(2)} V`]);
+      if (b.healthy !== false) rows.push(['CURRENT', `${(b.current ?? 0).toFixed(1)} A`], ['USED', `${Math.round(b.consumedMah ?? 0)} mAh${Number.isFinite(b.remainingPct) ? ` ${Math.round(b.remainingPct)}%` : ''}`]);
+    }
+    const rf = sim.sensors?.rangefinder;
+    if (rf) rows.push(['RANGEFINDER', rf.healthy ? `${rf.distance_m.toFixed(2)} m` : 'no data']);
+    const tc = sim.sensors?.internalTempC;
+    if (Number.isFinite(tc)) rows.push(['INT TEMP', `${tc.toFixed(1)} °C`]);
+    rows.push(['GCS LINK', extra.gcsLinkDown ? 'DOWN' : sim.fw.failsafe?.gcs ? 'LOST' : 'OK']);
     const flags = [];
     if (st.inputHold) flags.push('INPUT HOLD');
     if (st.rollPitchMode) flags.push('ATTITUDE INPUT');
@@ -237,6 +298,7 @@ export class HUD {
     if (st.saturated) flags.push('THRUSTERS SATURATED');
     if (st.leak) flags.push('LEAK FAILSAFE');
     if (st.internalPressureFs) flags.push('INTERNAL PRESSURE');
+    if (st.atBottom) flags.push('AT BOTTOM');
     g.fillStyle = 'rgba(4,14,20,0.6)';
     g.beginPath(); g.roundRect(x - 10, y - 16, 172, rows.length * 18 + flags.length * 18 + 16, 8); g.fill();
     rows.forEach(([k, val], i) => { this.text(g, k, x, y + i * 18, INK2, 'left'); this.text(g, val, x + 152, y + i * 18, INK, 'right'); });

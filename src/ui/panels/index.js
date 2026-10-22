@@ -10,9 +10,10 @@ import params from './params.js';
 import joystick from './joystick.js';
 import motors from './motors.js';
 import tuning from './tuning.js';
+import mission from './mission.js';
 import logs from './logs.js';
 import team from './team.js';
 import help from './help.js';
 import autotune from './autotune.js';
 
-export const PANELS = [vehicle, thrusters, frame, mixer, hydro, cfd, env, params, joystick, motors, tuning, logs, team, help, autotune];
+export const PANELS = [vehicle, thrusters, frame, mixer, hydro, cfd, env, params, joystick, motors, tuning, mission, logs, team, help, autotune];

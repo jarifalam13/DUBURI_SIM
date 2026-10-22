@@ -49,14 +49,16 @@ export default {
     const el = h('div', { class: 'section', style: { gap: '18px' } });
     const msgBox = h('div', { class: 'card', style: { maxHeight: '260px', overflowY: 'auto', fontFamily: 'var(--font-data)', fontSize: '0.75rem', gap: '3px' } });
     const telNote = h('p', { class: 'note' });
-    let lastLen = -1;
+    let lastMsg = null, lastLen = -1;
     const drawMsgs = () => {
-      const m = app.sim.fw.messages;
-      if (m.length === lastLen && msgBox.childElementCount) return;
-      lastLen = m.length;
-      msgBox.replaceChildren(...(m.length ? m.slice().reverse().map((x) => h('div', { style: { color: x.severity <= 3 ? '#ff9a9a' : x.severity === 4 ? 'var(--warning)' : 'var(--ink-2)' } }, `${fmt(x.t, 1).padStart(7)}  ${SEV[x.severity] ?? x.severity}  ${x.text}`)) : [h('span', { class: 'note' }, 'No messages yet.')]));
       const tel = app.sim.telemetry;
       telNote.textContent = `${tel.count.toLocaleString()} samples at 50 Hz (${fmt(tel.count / 50, 1)} s of the last ${fmt(tel.capacity / 50 / 60, 0)} minutes are kept).`;
+      const m = app.sim.fw.messages;
+      // the list is capped (push + shift), so its length stops changing: compare the newest entry
+      const newest = m[m.length - 1] ?? null;
+      if (newest === lastMsg && m.length === lastLen && msgBox.childElementCount) return;
+      lastMsg = newest; lastLen = m.length;
+      msgBox.replaceChildren(...(m.length ? m.slice().reverse().map((x) => h('div', { style: { color: x.severity <= 3 ? '#ff9a9a' : x.severity === 4 ? 'var(--warning)' : 'var(--ink-2)' } }, `${fmt(x.t, 1).padStart(7)}  ${SEV[x.severity] ?? x.severity}  ${x.text}`)) : [h('span', { class: 'note' }, 'No messages yet.')]));
     };
     drawMsgs();
     el.append(h('div', { class: 'section' }, h('h3', {}, 'Autopilot messages'), msgBox));

@@ -102,15 +102,17 @@ export class App {
     this.logo = h('img', { class: 'logo', alt: '', hidden: true });
     this.logoFallback = h('div', { class: 'logo logo-fallback', 'aria-hidden': 'true' }, 'D');
     this.teamLine = h('span', {}, '');
-    this.modeSelect = h('select', { class: 'mode-select', id: 'mode-select', 'aria-label': 'Flight mode', onchange: () => this.setMode(+this.modeSelect.value) },
-      SIM_MODES.map((m) => h('option', { value: String(m) }, MODE_LABEL[m])));
+    // every mode the firmware port offers (SIM_MODES from sub.js); the select gives the keyboard back after a pick
+    this.modeSelect = h('select', { class: 'mode-select', id: 'mode-select', 'aria-label': 'Flight mode', onchange: () => { this.setMode(+this.modeSelect.value); this.modeSelect.blur(); } },
+      SIM_MODES.map((m) => h('option', { value: String(m) }, MODE_LABEL[m] ?? `Mode ${m}`)));
     this.armBtn = h('button', { class: 'arm-btn', id: 'arm-btn', onclick: () => this.toggleArm() }, 'DISARMED');
     this.gainChip = h('span', { class: 'chip hide-sm', title: 'Pilot gain (JS_GAIN)' }, 'Gain ', h('b', {}, '50%'));
     this.inputChip = h('span', { class: 'chip hide-sm', title: 'Active pilot input' }, 'Keyboard');
+    this.gcsBtn = h('button', { class: 'chip hide-sm', id: 'gcs-btn', title: 'Simulate losing the ground-station link: no MANUAL_CONTROL and no heartbeat reach the vehicle (pilot input and GCS failsafes)', 'aria-pressed': 'false', onclick: (e) => { this.toggleGcsLink(); e.currentTarget.blur(); } }, 'GCS link ', h('b', {}, 'OK'));
     this.timeChip = h('span', { class: 'chip mono hide-sm', title: 'Simulation time and real-time factor' }, '0.0 s');
     this.playBtn = h('button', { class: 'icon-btn', id: 'play-btn', title: 'Pause / resume (P)', onclick: () => this.togglePause() }, icon('pause'));
     this.resetBtn = h('button', { class: 'icon-btn', title: 'Reset vehicle (Backspace)', onclick: () => this.resetVehicle() }, icon('reset'));
-    this.camSelect = h('select', { class: 'mode-select hide-sm', id: 'camera-select', 'aria-label': 'Camera', onchange: () => this.scene.setCameraMode(this.camSelect.value) },
+    this.camSelect = h('select', { class: 'mode-select hide-sm', id: 'camera-select', 'aria-label': 'Camera', onchange: () => { this.scene.setCameraMode(this.camSelect.value); this.camSelect.blur(); } },
       CAMERAS.map(([k, l]) => h('option', { value: k }, l)));
     this.graphBtn = h('button', { class: 'icon-btn', title: 'Live graphs (G)', onclick: () => this.toggleDock() }, icon('chart'));
     this.uploadBtn = h('button', { class: 'btn top-btn', title: 'Upload your vehicle design (STL, OBJ or PLY)', onclick: () => this.pickDesign() }, icon('upload'), h('span', { class: 'hide-sm' }, 'Upload design'));
@@ -119,7 +121,7 @@ export class App {
       h('div', { class: 'brand' }, this.logo, this.logoFallback, h('div', { class: 'wordmark' }, h('b', {}, 'DUBURI'), this.teamLine)),
       h('div', { class: 'bar-group top-actions' }, this.uploadBtn, this.tuneBtn),
       h('div', { class: 'bar-spacer' }),
-      h('div', { class: 'bar-group' }, this.modeSelect, this.armBtn, this.gainChip, this.inputChip),
+      h('div', { class: 'bar-group' }, this.modeSelect, this.armBtn, this.gainChip, this.inputChip, this.gcsBtn),
       h('div', { class: 'bar-spacer' }),
       h('div', { class: 'bar-group' }, this.timeChip, this.playBtn, this.resetBtn, this.camSelect, this.graphBtn));
     this.rail = h('nav', { class: 'rail', 'aria-label': 'Vehicle setup' });
@@ -311,9 +313,14 @@ export class App {
   buildSim(reset) {
     try {
       if (!this.sim || reset) {
+        const prev = this.sim;
         this.sim = new Simulation(this.cfg, this.geo);
-        this.sim.on((ev) => { if (ev === 'reset') this.modeSelect.value = String(this.sim.fw.mode); });
+        // a new simulation keeps the pause / speed the controls show
+        if (prev) { this.sim.paused = prev.paused; this.sim.timeScale = prev.timeScale; }
+        this.sim.on((ev) => { if (ev === 'reset' || ev === 'rebuild') { this.syncModeOptions(); this.applyGcsLink(); } });
+        this.playBtn?.replaceChildren(icon(this.sim.paused ? 'play' : 'pause'));
       } else this.sim.rebuild(this.cfg, this.geo, { keepState: true });
+      this.applyGcsLink();
       this.simError = null;
     } catch (e) {
       this.simError = e.message;
@@ -321,7 +328,58 @@ export class App {
       return;
     }
     this.refreshOverlays();
-    this.modeSelect.value = String(this.sim.fw.mode);
+    this.syncModeOptions();
+  }
+
+  // the select lists SIM_MODES; a mode the vehicle is in but not listed (e.g. MOTOR_DETECT entered by the firmware) is added
+  syncModeOptions() {
+    const m = this.sim?.fw?.mode;
+    if (m === undefined) return;
+    if (![...this.modeSelect.options].some((o) => o.value === String(m))) this.modeSelect.append(h('option', { value: String(m) }, MODE_LABEL[m] ?? `Mode ${m}`));
+    if (document.activeElement !== this.modeSelect) this.modeSelect.value = String(m);
+  }
+
+  // ---- simulated GCS link (MANUAL_CONTROL + heartbeat) ----
+  toggleGcsLink(force) {
+    this.gcsLinkDown = force ?? !this.gcsLinkDown;
+    this.applyGcsLink();
+    toast(this.gcsLinkDown ? 'GCS link dropped: the vehicle gets no MANUAL_CONTROL or heartbeat' : 'GCS link restored', this.gcsLinkDown ? 'bad' : 'good');
+  }
+  applyGcsLink() {
+    const sim = this.sim;
+    if (!sim) return;
+    const down = !!this.gcsLinkDown;
+    sim.opts.noPilot = down;
+    sim.gcsLinkDown = down;
+    if (sim.fw) { sim.fw.gcsLinkDown = down; sim.fw.setGcsLink?.(!down); }
+    this.gcsBtn?.classList.toggle('bad', down);
+    this.gcsBtn?.setAttribute('aria-pressed', down ? 'true' : 'false');
+    this.gcsBtn?.replaceChildren('GCS link ', h('b', {}, down ? 'DOWN' : 'OK'));
+  }
+  gcsBlocked() { if (this.gcsLinkDown) { toast('The GCS link is down: restore it first (GCS link button)', 'bad'); return true; } return false; }
+
+  // AUTO mission (cfg.mission: [{pos:[n,e,d], hold}]) sent to the firmware when it offers setMission
+  uploadMission(list = this.cfg.mission || []) {
+    const wps = list.map((w) => ({ ...w, pos: w.pos.slice(), n: w.pos[0], e: w.pos[1], d: w.pos[2], hold: w.hold ?? 0 }));
+    const fw = this.sim?.fw;
+    if (!fw?.setMission) { toast('This firmware build has no AUTO mission support yet', 'bad'); return false; }
+    const r = fw.setMission(wps);
+    if (r === false) { const m = fw.messages[fw.messages.length - 1]; toast(m ? m.text : 'Mission rejected', 'bad'); return false; }
+    toast(`Mission with ${wps.length} waypoint${wps.length === 1 ? '' : 's'} sent to the vehicle`, 'good');
+    return true;
+  }
+  // GUIDED "go to" (NED metres)
+  guidedGoto(pos) {
+    const fw = this.sim?.fw;
+    if (!fw || this.gcsBlocked()) return false;
+    const fn = fw.setGuidedTarget ?? fw.setGuidedPosition ?? fw.guidedGoto ?? fw.guided?.setTarget;
+    if (!fn) { toast('This firmware build has no GUIDED target support yet', 'bad'); return false; }
+    if (fw.mode !== MODE.GUIDED && MODE.GUIDED !== undefined && !fw.setMode(MODE.GUIDED, 'gcs')) { const m = fw.messages[fw.messages.length - 1]; toast(m ? m.text : 'GUIDED not available', 'bad'); return false; }
+    const r = fn.call(fw.guided?.setTarget === fn ? fw.guided : fw, pos.slice());
+    if (r === false) { toast('Guided target rejected', 'bad'); return false; }
+    this.guidedTarget = pos.slice();
+    toast(`Going to N ${pos[0].toFixed(2)} m, E ${pos[1].toFixed(2)} m, depth ${pos[2].toFixed(2)} m`, 'good');
+    return true;
   }
 
   refreshOverlays() {
@@ -529,11 +587,13 @@ export class App {
 
   // ------------------------------------------------------------------ actions
   toggleArm() {
+    if (this.gcsBlocked()) return;
     const fw = this.sim.fw;
     if (fw.armed) fw.disarm('gcs');
     else if (!fw.arm('gcs')) { const m = fw.messages[fw.messages.length - 1]; toast(m ? m.text : 'Arming failed', 'bad'); }
   }
   setMode(m) {
+    if (this.gcsBlocked()) { this.modeSelect.value = String(this.sim.fw.mode); return; }
     if (!this.sim.fw.setMode(m, 'gcs')) { const msg = this.sim.fw.messages[this.sim.fw.messages.length - 1]; toast(msg ? msg.text : 'Mode change failed', 'bad'); }
     this.modeSelect.value = String(this.sim.fw.mode);
   }
@@ -577,12 +637,16 @@ export class App {
         const t0 = performance.now();
         this.sim.advance(dt);
         this.simCost = (this.simCost ?? 0) * 0.95 + (performance.now() - t0) * 0.05;
-        // camera tilt follows the mount tilt input
+        // camera mount and other servo outputs run in firmware time (paused / sped up with the sim);
+        // the camera view follows the tilt servo (SERVOn_FUNCTION 7, MNT1_*)
         const js = this.sim.fw.js;
-        if (this.sim.fw.cameraTilt === 0) { this.scene.camTilt = 0; this.sim.fw.cameraTilt = null; }
-        this.scene.camTilt = Math.max(-1.2, Math.min(1.2, this.scene.camTilt + (js.camTilt > 1600 ? 1 : js.camTilt < 1400 ? -1 : 0) * dt * 0.6));
+        js.update?.(this.sim.fw.time);
+        const tilt = js.cameraTiltDeg?.(), pan = js.cameraPanDeg?.();
+        this.scene.camTilt = Number.isFinite(tilt) ? (tilt * Math.PI) / 180 : 0;
+        this.scene.camPan = Number.isFinite(pan) ? (pan * Math.PI) / 180 : 0;
+        this.drainFirmwareSaves();
         this.scene.update(this.sim, dt);
-        this.hud.draw(this.sim, { paused: this.sim.paused, cameraMode: this.scene.cameraMode });
+        this.hud.draw(this.sim, { paused: this.sim.paused, cameraMode: this.scene.cameraMode, gcsLinkDown: !!this.gcsLinkDown });
         if (this.frame % 6 === 0) this.updateTopbar();
         if (this.frame % 12 === 0) this.activePanel?.tick?.();
         if (this.dock && !this.dockHost.hidden && this.frame % 3 === 0) this.dock.tick();
@@ -595,12 +659,34 @@ export class App {
     requestAnimationFrame((tt) => this.loop(tt));
   }
 
+  // parameters the firmware saved itself (set_and_save: JS_GAIN_* on gain buttons, SERVOn_FUNCTION migrations at boot)
+  drainFirmwareSaves() {
+    const q = this.sim.fw.js?.pendingSaves;
+    if (!q?.length) return;
+    for (const [n, v] of q.splice(0)) {
+      this.cfg.params[n] = v;
+      if (this.cfg.extraParams && n in this.cfg.extraParams) delete this.cfg.extraParams[n];
+    }
+    this.scheduleSave();
+  }
+
+  // GUIDED "go to": click the water in the Top view while in GUIDED; mission/target markers
+  updateGuidedUi() {
+    const fw = this.sim.fw;
+    const on = this.scene.cameraMode === 'top' && MODE.GUIDED !== undefined && fw.mode === MODE.GUIDED && !this.gcsLinkDown;
+    if (on !== !!this.scene.groundPickHandler) this.scene.setGroundPickHandler?.(on ? (p) => this.guidedGoto([p[0], p[1], this.sim.plant.position[2]]) : null);
+    if (fw.mode !== MODE.GUIDED) this.guidedTarget = null;
+    const sig = JSON.stringify([this.cfg.mission || [], this.guidedTarget]);
+    if (sig !== this.wpSig) { this.wpSig = sig; this.scene.setWaypoints?.(this.cfg.mission || [], this.guidedTarget); }
+  }
+
   updateTopbar() {
     const fw = this.sim.fw;
+    this.updateGuidedUi();
     this.armBtn.textContent = fw.armed ? 'ARMED' : 'DISARMED';
     this.armBtn.classList.toggle('armed', fw.armed);
     this.armBtn.setAttribute('aria-pressed', fw.armed ? 'true' : 'false');
-    if (document.activeElement !== this.modeSelect) this.modeSelect.value = String(fw.mode);
+    this.syncModeOptions();
     this.gainChip.replaceChildren('Gain ', h('b', {}, `${Math.round(fw.gain * 100)}%`));
     const src = this.input.source;
     const name = src === 'gamepad' ? shortName(this.input.gamepadName) : src === 'touch' ? 'Touch sticks' : this.input.gamepadBlocked ? 'Keyboard (controller blocked here)' : 'Keyboard';

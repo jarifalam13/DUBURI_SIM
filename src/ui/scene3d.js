@@ -40,7 +40,8 @@ export class Scene3D {
     this.controls.maxDistance = 30;
     this.controls.enabled = false;
     this.cameraMode = 'chase';
-    this.camTilt = 0;
+    this.camTilt = 0; // camera mount tilt (rad, up positive), set from the tilt servo by the app
+    this.camPan = 0; // camera mount pan (rad, right positive)
     this.time = 0;
     this.uniforms = { uTime: { value: 0 } };
     this.showThrustArrows = true;
@@ -53,6 +54,7 @@ export class Scene3D {
     this.scene.add(this.vehicle);
     this.ghost = null;
     this.pickHandler = null;
+    this.groundPickHandler = null;
     this.raycaster = new THREE.Raycaster();
     this.renderer.domElement.addEventListener('pointerdown', (e) => this.onPointer(e));
     this.resize();
@@ -392,10 +394,19 @@ export class Scene3D {
   }
 
   setPickHandler(fn) { this.pickHandler = fn; this.renderer.domElement.style.cursor = fn ? 'crosshair' : ''; }
+  // click on the water at the vehicle's depth (top view): fn([north, east, down]) - used for GUIDED "go to"
+  setGroundPickHandler(fn) { this.groundPickHandler = fn; if (!this.pickHandler) this.renderer.domElement.style.cursor = fn ? 'crosshair' : ''; }
   onPointer(e) {
-    if (!this.pickHandler || !this.meshes?.length) return;
     const r = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    if (!this.pickHandler && this.groundPickHandler && this.lastPos) {
+      this.raycaster.setFromCamera(ndc, this.camera);
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -this.lastPos.y);
+      const at = new THREE.Vector3();
+      if (this.raycaster.ray.intersectPlane(plane, at)) this.groundPickHandler(fromThree(at), e);
+      return;
+    }
+    if (!this.pickHandler || !this.meshes?.length) return;
     this.raycaster.setFromCamera(ndc, this.camera);
     const hit = this.raycaster.intersectObjects(this.meshes, false)[0];
     if (!hit) return;
@@ -457,8 +468,9 @@ export class Scene3D {
         this.ghost.quaternion.copy(qg);
       }
     }
-    // lights
-    const lv = sim.fw.js.lights1 / 1000;
+    // lights: brightness of the lamps on the lights1 / lights2 servo outputs (SERVOn_FUNCTION 181/182)
+    const js = sim.fw.js;
+    const lv = js.lightLevel ? Math.max(js.lightLevel(0), js.lightLevel(1)) : js.lights1 / 1000;
     this.spot.intensity = lv * 9;
     // marine snow drifts with the water and wraps around the camera
     const cur = sim.env.cfg.current;
@@ -466,7 +478,7 @@ export class Scene3D {
     const sp = this.snow.geometry.attributes.position.array, R = this.snowR;
     const c = this.camera.position;
     for (let i = 0; i < sp.length; i += 3) {
-      sp[i] += drift.x; sp[i + 1] += drift.y + Math.sin(this.time * 0.3 + i) * 0.0004; sp[i + 2] += drift.z;
+      sp[i] += drift.x; sp[i + 1] += drift.y + Math.sin(this.time * 0.3 + i) * 0.024 * dt; sp[i + 2] += drift.z;
       for (let k = 0; k < 3; k++) {
         const cc = k === 0 ? c.x : k === 1 ? c.y : c.z;
         if (sp[i + k] - cc > R) sp[i + k] -= 2 * R; else if (sp[i + k] - cc < -R) sp[i + k] += 2 * R;
@@ -511,10 +523,11 @@ export class Scene3D {
   }
   updateBubbles(dt) {
     const bp = this.bubblePos, bv = this.bubbleVel, bl = this.bubbleLife;
+    const damp = Math.pow(0.94, dt * 60); // 6 % per 1/60 s, whatever the frame rate
     for (let i = 0; i < bl.length; i++) {
       if (bl[i] <= 0) { if (bp[i * 3] < 1e4) bp[i * 3] = 1e5; continue; }
       bl[i] -= dt;
-      bv[i * 3] *= 0.94; bv[i * 3 + 1] = bv[i * 3 + 1] * 0.94 + 0.25 * dt; bv[i * 3 + 2] *= 0.94;
+      bv[i * 3] *= damp; bv[i * 3 + 1] = bv[i * 3 + 1] * damp + 0.25 * dt; bv[i * 3 + 2] *= damp;
       bp[i * 3] += bv[i * 3] * dt; bp[i * 3 + 1] += bv[i * 3 + 1] * dt; bp[i * 3 + 2] += bv[i * 3 + 2] * dt;
       if (bp[i * 3 + 1] > -0.01) bl[i] = 0;
     }
@@ -548,9 +561,25 @@ export class Scene3D {
       const nose = this.body.localToWorld(toThree([this.bboxMaxX + 0.01, this.bboxCenter?.[1] ?? 0, this.bboxCenter?.[2] ?? 0]));
       cam.position.copy(nose);
       const tilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), this.camTilt);
-      const look = new THREE.Quaternion().copy(qt).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0)).multiply(tilt);
+      const look = new THREE.Quaternion().copy(qt).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -this.camPan)).multiply(tilt);
       cam.quaternion.copy(look);
     }
+  }
+
+  // AUTO mission waypoints and the GUIDED target, NED metres: [{pos:[n,e,d]}], target [n,e,d] | null
+  setWaypoints(list = [], target = null) {
+    if (this.wpGroup) { this.scene.remove(this.wpGroup); this.wpGroup.traverse((o) => { o.geometry?.dispose?.(); o.material?.dispose?.(); }); }
+    const g = new THREE.Group();
+    const mk = (p, color, r) => { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthTest: false })); m.position.copy(toThree(p)); m.renderOrder = 14; return m; };
+    const pts = list.filter((w) => Array.isArray(w?.pos)).map((w) => w.pos);
+    pts.forEach((p, i) => g.add(mk(p, i === 0 ? 0x7fe0ad : 0x5cc8e0, 0.06)));
+    if (pts.length > 1) {
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts.map(toThree)), new THREE.LineBasicMaterial({ color: 0x5cc8e0, depthTest: false, transparent: true, opacity: 0.8 }));
+      line.renderOrder = 14; g.add(line);
+    }
+    if (target) g.add(mk(target, 0xffb547, 0.08));
+    this.wpGroup = g;
+    this.scene.add(g);
   }
 
   setVisibility({ arrows, markers, ghost }) {

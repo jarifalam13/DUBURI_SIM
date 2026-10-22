@@ -121,6 +121,8 @@ export function numberField(o) {
     inp.title = '';
     o.set(v);
   });
+  // Enter commits the value and hands the keyboard back to the flight keys
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } });
   const wrap = h('label', { class: 'field', for: id }, h('span', {}, o.label, o.unit ? h('em', {}, ` (${o.unit})`) : null), inp);
   wrap.refresh = show;
   if (o.hint) wrap.title = o.hint;

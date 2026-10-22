@@ -23,26 +23,40 @@ export class InputManager {
     window.addEventListener('keydown', (e) => this.onKey(e, true));
     window.addEventListener('keyup', (e) => this.onKey(e, false));
     window.addEventListener('blur', () => this.keys.clear());
+    // starting to type in a field drops held flight keys (their keyup may never come to us)
+    window.addEventListener('focusin', (e) => { if (isTextEntry(e.target)) this.keys.clear(); });
     try {
       window.addEventListener('gamepadconnected', (e) => { this.gamepadIndex = e.gamepad.index; this.gamepadName = e.gamepad.id; this.app.toast?.(`Controller connected: ${shortName(e.gamepad.id)}`, 'good'); });
       window.addEventListener('gamepaddisconnected', (e) => { if (this.gamepadIndex === e.gamepad.index) { this.gamepadIndex = null; this.gamepadName = null; this.app.toast?.('Controller disconnected', 'bad'); } });
     } catch { /* ignore */ }
   }
 
+  // a text-like field has the keyboard: typing goes there, not to the vehicle
   typing() {
     const a = document.activeElement;
-    return a && (a.tagName === 'INPUT' || a.tagName === 'SELECT' || a.tagName === 'TEXTAREA' || a.isContentEditable);
+    return isTextEntry(a);
   }
 
   onKey(e, down) {
-    if (this.typing()) return;
     const code = e.code;
-    if (down && !e.repeat) {
+    // a release always counts, wherever the focus is (a key held while focus moves must not stick)
+    if (!down) { this.keys.delete(code); return; }
+    if (this.typing()) return;
+    const a = document.activeElement;
+    const tag = a?.tagName;
+    const control = tag === 'SELECT' || tag === 'BUTTON' || tag === 'INPUT' || tag === 'A';
+    // Enter / Backspace on a focused button or menu belong to it (dialogs, toggles)
+    if (control && (code === 'Enter' || code === 'NumpadEnter' || code === 'Backspace')) return;
+    // a focused select, button, slider or checkbox would turn W/A/S/D, arrows, Space and digits into
+    // its own navigation (the mode select changes flight mode on letters): flight keys win
+    const isFlight = code in FLIGHT_KEYS || code === 'ShiftLeft' || code === 'ShiftRight';
+    if (control && (isFlight || /^Digit[0-9]$/.test(code) || code === 'Equal' || code === 'Minus')) { if (!code.startsWith('Shift')) e.preventDefault(); a.blur?.(); }
+    if (!e.repeat) {
       const handled = this.app.hotkey?.(code, e);
       if (handled) { e.preventDefault(); return; }
     }
-    if (code in FLIGHT_KEYS || code === 'ShiftLeft' || code === 'ShiftRight') {
-      if (down) this.keys.add(code); else this.keys.delete(code);
+    if (isFlight) {
+      this.keys.add(code);
       if (code.startsWith('Arrow') || code === 'Space') e.preventDefault();
     }
   }
@@ -94,7 +108,7 @@ export class InputManager {
     // keyboard: ramp towards key targets
     const target = { x: 0, y: 0, z: 0, r: 0, s: 0, t: 0 };
     for (const k of this.keys) { const m = FLIGHT_KEYS[k]; if (m) target[m[0]] += m[1]; }
-    const ramp = Math.min(1, dt * 5);
+    const ramp = 1 - Math.exp(-dt * 5); // first-order ramp, same response at any frame rate
     for (const k of Object.keys(target)) this.axesKb[k] += (Math.max(-1, Math.min(1, target[k])) - this.axesKb[k]) * ramp;
     const kbActive = Object.values(this.axesKb).some((v) => Math.abs(v) > 0.01);
     let x = this.axesKb.x, y = this.axesKb.y, z = this.axesKb.z, r = this.axesKb.r, s = this.axesKb.s, t = this.axesKb.t;
@@ -108,18 +122,20 @@ export class InputManager {
       if (padActive || !kbActive) { x = gx; y = gy; z = gz; r = gr; }
       const trig = (b) => (pad.buttons[b] ? pad.buttons[b].value : 0);
       const lt = trig(6), rt = trig(7);
-      const applyTrig = (fn, v) => { if (fn === 'pitch') s += v; else if (fn === 'roll') t += v; else if (fn === 'down') z -= v; else if (fn === 'up') z += v; };
-      applyTrig(jc.triggers.left, -lt);
-      applyTrig(jc.triggers.right, rt);
+      for (const [side, v] of [['left', lt], ['right', rt]]) {
+        const d = triggerContribution(jc.triggers[side], v, side);
+        s += d.s; t += d.t; z += d.z;
+      }
       const map = jc.buttonMap || {};
-      pad.buttons.forEach((b, i) => { if (b.pressed && map[i] !== undefined) buttons |= 1 << map[i]; });
+      pad.buttons.forEach((b, i) => { if (b.pressed && map[i] !== undefined && map[i] >= 0 && map[i] < 32) buttons |= 1 << map[i]; });
       this.padState = { axes: Array.from(pad.axes), buttons: pad.buttons.map((b) => b.value), id: pad.id };
       this.source = padActive ? 'gamepad' : kbActive ? 'keyboard' : this.gamepadName ? 'gamepad' : 'keyboard';
     } else this.source = this.touch.active ? 'touch' : 'keyboard';
     if (this.touch.active && (this.touch.lx || this.touch.ly || this.touch.rx || this.touch.ry)) {
       r = shape(this.touch.lx); z = shape(-this.touch.ly); y = shape(this.touch.rx); x = shape(-this.touch.ry);
     }
-    if (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) buttons |= 1 << 5; // keyboard shift = Guide (shift) button
+    // keyboard Shift presses the joystick button whose BTNn_FUNCTION is shift (k_shift), if any
+    if (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) { const b = shiftButtonIndex(cfg.params); if (b >= 0) buttons |= 1 << b; }
     const cl = (v) => Math.max(-1, Math.min(1, v));
     return {
       x: Math.round(cl(x) * 1000), y: Math.round(cl(y) * 1000), z: Math.round(500 + cl(z) * 500), r: Math.round(cl(r) * 1000),
@@ -128,6 +144,26 @@ export class InputManager {
   }
 }
 
+// A focused element that takes typed text (not selects, buttons, checkboxes or sliders)
+export function isTextEntry(a) {
+  if (!a) return false;
+  if (a.isContentEditable || a.tagName === 'TEXTAREA') return true;
+  if (a.tagName !== 'INPUT') return false;
+  return !/^(button|checkbox|radio|range|color|file|submit|reset|image)$/i.test(a.type || 'text');
+}
+// Gamepad trigger (0..1) assigned to a function: left trigger is the negative side of a pitch/roll
+// pair, while Ascend/Descend act the same on either trigger.
+export function triggerContribution(fn, v, side) {
+  const d = { s: 0, t: 0, z: 0 };
+  const sv = side === 'left' ? -v : v;
+  if (fn === 'pitch') d.s = sv; else if (fn === 'roll') d.t = sv; else if (fn === 'up') d.z = v; else if (fn === 'down') d.z = -v;
+  return d;
+}
+// first joystick button with BTNn_FUNCTION = 1 (shift), as joystick.cpp:71-75 detects it; -1 if none
+export function shiftButtonIndex(P = {}) {
+  for (let i = 0; i < 32; i++) if ((P[`BTN${i}_FUNCTION`] ?? (i === 5 ? 1 : 0)) === 1) return i;
+  return -1;
+}
 export function shortName(id = '') {
   const m = /^(.*?)\s*\(/.exec(id);
   return (m ? m[1] : id).slice(0, 40) || 'Gamepad';
@@ -135,5 +171,6 @@ export function shortName(id = '') {
 export const KEY_HELP = [
   ['W / S', 'Forward / back'], ['A / D', 'Yaw left / right'], ['Q / E', 'Strafe left / right'], ['R / F (Space / C)', 'Ascend / descend'],
   ['I / K', 'Pitch input (6-DOF)'], ['J / L', 'Roll input (6-DOF)'], ['Enter', 'Arm / disarm'], ['1-6', 'Manual, Stabilize, Depth hold, Acro, Position hold, Surface'],
-  ['+ / −', 'Pilot gain'], ['V', 'Next camera'], ['G', 'Graphs'], ['P', 'Pause'], ['Backspace', 'Reset vehicle'], ['Shift', 'Joystick shift button'],
+  ['+ / −', 'Pilot gain'], ['V', 'Next camera'], ['G', 'Graphs'], ['P', 'Pause'], ['Backspace', 'Reset vehicle'], ['Shift', 'Presses the joystick button set to shift (BTNn_FUNCTION = 1)'],
+  ['Flight keys', 'Work whenever no text field has the focus (a focused menu or button lets go of them)'],
 ];
