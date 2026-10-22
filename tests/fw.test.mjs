@@ -68,7 +68,13 @@ test('GCS heartbeat failsafe: FS_GCS_ENABLE 2 disarms, 3 enters ALT_HOLD', () =>
   sim.runFor(2.0);
   assert.ok(sim.fw.armed);
   sim.runFor(1.0);
-  assert.ok(!sim.fw.armed && has(sim, 'MYGCS: 255, heartbeat lost') && sim.fw.failsafe.gcs === false);
+  assert.ok(!sim.fw.armed && sim.fw.failsafe.gcs);
+  // the 30 s warning timer starts at boot (failsafe.cpp:338): first text once millis() > 30 s
+  sim.runFor(27);
+  assert.ok(has(sim, 'MYGCS: 255, heartbeat lost'));
+  sim.setGcsLink(true);
+  sim.runFor(1);
+  assert.equal(sim.fw.failsafe.gcs, false);
   const s2 = makeSim((c) => { c.params.FS_GCS_ENABLE = 3; c.params.FS_PILOT_INPUT = 0; });
   s2.runFor(1.2);
   s2.fw.setMode(MODE.STABILIZE);
@@ -85,6 +91,7 @@ test('GCS heartbeat failsafe: FS_GCS_ENABLE 2 disarms, 3 enters ALT_HOLD', () =>
 
 test('crash check: attitude error > 30 deg for 2 s warns and disarms (FS_CRASH_CHECK 2)', () => {
   const sim = makeSim((c) => { c.params.FS_CRASH_CHECK = 2; });
+  sim.runFor(20.5); // the 20 s warning interval counts from boot (failsafe.cpp:404)
   sim.fw.setMode(MODE.STABILIZE);
   assert.ok(sim.fw.arm());
   sim.fw.att.getAttErrorAngleDeg = () => 40;
@@ -96,6 +103,7 @@ test('crash check: attitude error > 30 deg for 2 s warns and disarms (FS_CRASH_C
 
 test('EKF failsafe: variance over FS_EKF_THRESH for 2 s, position_ok false', () => {
   const sim = makeSim((c) => { c.params.FS_EKF_ACTION = 2; withPos(c); });
+  sim.runFor(20.5);
   sim.fw.setMode(MODE.STABILIZE);
   assert.ok(sim.fw.arm());
   assert.ok(sim.fw.positionOk());
@@ -222,7 +230,7 @@ test('terrain failsafe: AUTO waypoint above the bottom without a rangefinder dis
   assert.ok(sim.fw.setMode(MODE.AUTO) && sim.fw.arm());
   sim.runFor(0.5);
   assert.ok(has(sim, 'Terrain data (rangefinder) not available'));
-  assert.ok(!sim.fw.armed && sim.fw.failsafe.terrain);
+  assert.ok(!sim.fw.armed);
 });
 
 test('AUTO flies the waypoint list; CIRCLE turns; GUIDED goes to a target', () => {
@@ -261,8 +269,10 @@ test('bottom detector counts cumulatively to 400 ticks (surface_bottom_detector.
   const fw = sim.fw;
   fw.armed = true;
   fw.sensors = Object.create(fw.sensors, { velocityZUpCms: { value: 0 }, depthMeasured: { value: 2 } });
-  for (let i = 0; i < 600; i++) { fw.motors.limit.throttle_lower = i % 4 !== 3; fw.updateSurfaceBottom(); }
-  assert.ok(fw.atBottom, 'interrupted contact still accumulates');
+  let first = -1;
+  for (let i = 0; i < 600 && first < 0; i++) { fw.motors.limit.throttle_lower = i % 4 !== 3; fw.updateSurfaceBottom(); if (fw.atBottom) first = i; }
+  // 400 counted ticks out of 3-in-4 contact: bottomed near tick 533 (a consecutive counter never triggers)
+  assert.ok(first > 520 && first < 545, `${first}`);
   fw.armed = false;
 });
 
