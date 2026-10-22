@@ -219,7 +219,7 @@ export default {
         numberField({ label: 'Attitude estimate error', unit: '°', step: 0.01, min: 0, get: () => S.attitudeNoise, set: (v) => { S.attitudeNoise = v; live(); } }),
         numberField({ label: 'Depth sensor noise', unit: 'm', step: 0.001, min: 0, get: () => S.depthNoise, set: (v) => { S.depthNoise = v; live(); } }),
         numberField({ label: 'Depth sensor rate', unit: 'Hz', step: 1, min: 1, max: 400, get: () => S.depthRate, set: (v) => { S.depthRate = v; live(); } })),
-      checkbox('Positioning system present (DVL / USBL) — needed for Position Hold', () => S.positioning, (v) => { S.positioning = v; live(); app.refreshPanel(); }),
+      checkbox('Positioning system present (DVL / USBL) — needed for Position Hold', () => S.positioning, (v) => { S.positioning = v; S.positioningSource = 'user'; live(); app.refreshPanel(); }),
       S.positioning ? numberField({ label: 'Position noise', unit: 'm', step: 0.005, min: 0, get: () => S.positionNoise, set: (v) => { S.positionNoise = v; live(); } }) : null,
       h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => { Object.assign(S, { gyroNoise: 0, accelNoise: 0, attitudeNoise: 0, depthNoise: 0 }); live(); app.refreshPanel(); } }, 'Ideal sensors'),
         h('button', { class: 'btn', onclick: () => { Object.assign(S, { gyroNoise: 0.0015, accelNoise: 0.04, attitudeNoise: 0.02, depthNoise: 0.002 }); live(); app.refreshPanel(); } }, 'Typical Pixhawk + Bar30'))));

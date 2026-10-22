@@ -1261,6 +1261,7 @@ export class ArduSubSim {
     this.failsafeEkfCheck();
     this.failsafeSensorsCheck();
     this.rc.readInput?.(this.ms);
+    this.js.update?.(this.time); // mount / servo outputs (g2.actuators.update_actuators)
   }
   updateBattCompass() {
     const s = this.sensors, plant = this.plantRef;

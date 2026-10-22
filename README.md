@@ -18,8 +18,8 @@ before the first pool session. Everything runs in one HTML file in the browser.
 | **Custom frame builder** | Add up to 12 thrusters (T200 / T500 / generic / your measured table), drag them on the top and side drawings (5 mm steps), set direction (presets, ±45° rotate, flip), mirror, remove, reverse `MOT_n_DIRECTION`, start from any built-in layout, and copy the resulting mixer as `add_motor_raw_6dof()` lines for a custom ArduSub build. |
 | **Body shape without CAD** | Simple open-frame, closed-box or torpedo bodies with your dimensions and a duct at every thruster — or your STL/OBJ/PLY, or the sample ROV. |
 | **Thruster layout → DOF** | Place thrusters on the model (click the hull). The allocator finds the largest set of independently controllable axes — full 6-DOF when the layout allows it, otherwise the maximum possible — and reports authority and cross-coupling per axis. Or fly the exact ArduSub `FRAME_CONFIG` table. |
-| **Your parameter file** | Every line is loaded: parameters that change the simulated flight use your values, the rest (calibration, EKF, serial, servo outputs, …) are kept unchanged and written back on export. The leak detector follows `LEAKn_PIN`/`LEAKn_TYPE`. |
-| **ArduSub 4.5.7 port** | `AP_Motors6DOF` mixers and saturation, `AC_AttitudeControl_Sub` (quaternion controller, input shaping, rate PIDs), `AC_PosControl` depth controller, position hold, `joystick.cpp` pilot mapping and `BTNn_FUNCTION`s, spool-up, arming checks, surface/bottom detection, pilot-input, leak (`FS_LEAK_ENABLE`) and internal-pressure (`FS_PRESS_*`) failsafes. Real parameter names; `.param` import/export (Mission Planner and QGC formats). |
+| **Your parameter file** | All 2708 ArduSub 4.5.7 parameters, generated from the ArduPilot source (`tools/gen-params.mjs`) with types, defaults, ranges, units, value lists and bitmasks. About 670 drive the simulation; the rest (calibration, EKF tuning, serial, logging, …) are kept exactly and written back on export. Mission Planner and QGC files round-trip losslessly; legacy names are converted. |
+| **ArduSub 4.5.7 port** | `AP_Motors6DOF` (mixers, saturation, full spool state machine, battery current limiter, `MOT_PWM_TYPE`, `SERVOn_FUNCTION` routing, motor test), `AC_PID` with SMAX slew limiter, D_FF and notch filters, `AC_AttitudeControl_Sub`, `AC_PosControl` (depth and XY), `joystick.cpp` with every `BTNn_FUNCTION`, RC1–16, the AP_Scheduler task table at ArduSub rates, AP_Arming_Sub checks, all modes (Manual, Stabilize, Acro, Depth Hold, SurfTrak, Position Hold, Surface, Guided, Auto, Circle, Motor Detect) and all failsafes (pilot input, GCS, leak, pressure, temperature, battery, EKF, crash, depth sensor, terrain). Every change is listed in [AUDIT.md](AUDIT.md). |
 | **Fly** | Keyboard or gamepad (Gamepad API, QGC button numbering), Cockpit/QGC-style HUD, chase/orbit/camera/top views, live target-vs-actual graphs, CSV logs. |
 | **Pool & water** | Any length, width and depth — test tank to open sea — with a flat floor or a shallow end and slope; wall height; presets; fresh or sea water; current, turbulence and linear waves. |
 | **Pressure** | Absolute pressure = air pressure + water column, with compressible water (UNESCO EOS-80). Buoyancy changes with depth (water density, hull compressibility). Bar02 / Bar30 / custom depth sensor with range limit and resolution, read through AP_Baro's formula (9800 Pa/m × `BARO_SPEC_GRAV`). Housings leak past their depth rating (orifice flow against the Boyle-compressed air inside) → leak detector → ArduSub failsafes. |
@@ -41,7 +41,7 @@ before the first pool session. Everything runs in one HTML file in the browser.
 
 ## Validation
 
-All numbers below are reproducible with the tools in `tools/` and the tests in `tests/` (79 automated tests, `npm test`).
+All numbers below are reproducible with the tools in `tools/` and the tests in `tests/` (185 automated tests, `npm test`).
 
 | Check | Result |
 |---|---|
@@ -67,7 +67,7 @@ All numbers below are reproducible with the tools in `tools/` and the tests in `
 
 ```bash
 npm install
-npm test               # 79 unit tests (physics, firmware, allocation, BEM, CFD, WASM, pressure, shapes, thruster detection)
+npm test               # 185 unit tests (physics, firmware, controllers, params, joystick, allocation, BEM, CFD, WASM, pressure, shapes, tuning, thruster detection)
 npm run build          # -> dist/duburi-sim.html (stand-alone), dist/artifact.html, docs/index.html (GitHub Pages)
 npm run build:wasm     # recompile src/wasm/kernels.c (needs clang with wasm32)
 npm run validate:cfd   # sphere drag through the full CFD pipeline

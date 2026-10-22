@@ -82,13 +82,14 @@ export class RCChannel {
     let r = clampI(this.radioIn, this.min, this.max);
     if (this.reversed) r = this.max - (r - this.min);
     const lo = this.min + dz;
-    if (r > lo) return trunc((this.highIn * (r - lo)) / (this.max - lo));
+    if (r > lo && this.max > lo) return trunc((this.highIn * (r - lo)) / (this.max - lo));
     return 0;
   }
   getControlMid() {
     if (this.type === 'range') {
       const r = trunc((this.min + this.max) / 2);
       const lo = this.min + this.deadZone;
+      if (this.max - lo <= 0) return 0; // dead zone covers the whole range
       return trunc((this.highIn * (r - lo)) / (this.max - lo));
     }
     return 0;

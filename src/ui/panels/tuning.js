@@ -48,7 +48,7 @@ export default {
     const chartHost = h('div');
     const metricsHost = h('div');
     const runBtn = h('button', { class: 'btn primary', onclick: () => runStep() }, 'Run step test');
-    const sizeField = numberField({ label: 'Step size', unit: STEP_AXES[memo.axis].unit, step: memo.axis === 'depth' ? 0.1 : 5, get: () => memo.size ?? STEP_AXES[memo.axis].size, set: (v) => { memo.size = v; } });
+    const sizeField = numberField({ label: 'Step size', unit: STEP_AXES[memo.axis].unit, step: STEP_AXES[memo.axis].unit === 'm' ? 0.1 : 5, get: () => memo.size ?? STEP_AXES[memo.axis].size, set: (v) => { memo.size = v; } });
     const stepSec = h('div', { class: 'section' }, h('h3', {}, 'Step test'),
       h('p', { class: 'note' }, 'A fresh copy of your vehicle is held at mid-depth in Depth Hold, then the target jumps by the step size. The live session is not disturbed.'),
       seg(Object.entries(STEP_AXES).map(([k, v]) => [k, v.label]), memo.axis, (v) => { memo.axis = v; memo.size = null; app.refreshPanel(); }),
@@ -62,7 +62,7 @@ export default {
       const data = { t: r.t, y: r.y, target: r.target, fixedStart: 0 };
       const p = memo.prev;
       if (p && p.axis === r.axis && p.t.length === r.t.length) { series.push({ name: 'previous', key: 'prev', color: 'var(--series-3)' }); data.prev = p.y; }
-      const chart = new StripChart({ title: `${STEP_AXES[r.axis].label} step ${fmt(r.size, r.axis === 'depth' ? 2 : 0)} ${r.unit}`, unit: '', series, window: 1e9, height: 220, static: true });
+      const chart = new StripChart({ title: `${STEP_AXES[r.axis].label} step ${fmt(r.size, r.unit === 'm' ? 2 : 0)} ${r.unit}`, unit: '', series, window: 1e9, height: 220, static: true });
       chartHost.replaceChildren(chart.el);
       draws.push(() => chart.draw(data));
       const rows = metricRows(r.metrics, r.unit);

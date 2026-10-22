@@ -10,7 +10,7 @@ import { GraphDock } from './dock.js';
 import { PANELS } from './panels/index.js';
 import { Simulation } from '../sim/simulation.js';
 import { MODE, MODE_LABEL, SIM_MODES } from '../ardusub/sub.js';
-import { defaultConfig, normalizeConfig, applyParamFile, thrusterFromPreset } from '../vehicle/config.js';
+import { defaultConfig, normalizeConfig, applyParamFile, thrusterFromPreset, setParamValue } from '../vehicle/config.js';
 import { parseParamFile } from '../ardusub/params.js';
 import { sampleGeometry } from '../vehicle/sample.js';
 import { parseSTL, writeBinarySTL } from '../geometry/stl.js';
@@ -418,11 +418,14 @@ export class App {
 
   // live parameter change (firmware only, no rebuild)
   setParam(name, value) {
-    this.cfg.params[name] = value;
-    if (this.cfg.extraParams && name in this.cfg.extraParams) delete this.cfg.extraParams[name];
+    // single validating setter (range clamp, leak detector / positioning follow-up)
+    const r = setParamValue(this.cfg, name, value);
+    if (r.error) { toast(`${name}: ${r.error}`, 'bad', 4000); return r; }
+    value = r.value;
     const structural = /^(FRAME_CONFIG|SCHED_LOOP_RATE|INS_|AHRS_TRIM|BARO_SPEC|EK3_)/.test(name) || /^MOT_\d+_DIRECTION$/.test(name);
     if (structural) this.changed({ immediate: true });
     else { this.sim.fw.applyParams({ [name]: value }); this.sim.cfg.params[name] = value; this.scheduleSave(); }
+    return r;
   }
 
   // replace the vehicle of the active team (vehicle file import)

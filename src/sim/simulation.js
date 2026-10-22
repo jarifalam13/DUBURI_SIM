@@ -28,7 +28,9 @@ export function buildMixer(cfg, geo) {
     if (factors.length !== cfg.thrusters.length) warnings.push(`FRAME_CONFIG ${fc} drives ${factors.length} motors but the vehicle has ${cfg.thrusters.length} thrusters.`);
   } else if (src === 'custom' && Array.isArray(cfg.mixer.custom) && cfg.mixer.custom.length) {
     factors = cfg.mixer.custom.map((r) => r.slice(0, 6).map(Number));
-    variant = cfg.mixer.saturation === 'clamp' ? 'generic' : cfg.mixer.saturation;
+    // a compiled custom frame runs AP_Motors6DOF's generic constrain mixer
+    variant = !cfg.mixer.saturation || cfg.mixer.saturation === 'clamp' ? 'generic' : cfg.mixer.saturation;
+    if (variant !== 'generic') warnings.push(`Saturation "${variant}" is simulator-only: a custom frame compiled into ArduSub uses the plain constrain mixer.`);
   } else {
     factors = analysis.factors.map((r) => r.slice());
     variant = cfg.mixer.saturation === 'clamp' ? 'generic' : cfg.mixer.saturation || 'priority';
