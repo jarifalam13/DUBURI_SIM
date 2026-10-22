@@ -5,9 +5,9 @@ that your thruster layout really gives roll, pitch and yaw, fly it with a gamepa
 through a faithful port of the ArduSub 4.5.7 controllers, and tune the parameters
 before the first pool session. Everything runs in one HTML file in the browser.
 
-**Open it online:** <https://jarifalamclaude-max.github.io/simulator/> (Chrome or Edge recommended; needs WebGL2).
+**Open it online:** <https://jarifalam13.github.io/DUBURI_SIM/> (Chrome or Edge recommended; needs WebGL2).
 
-**Documentation:** <https://jarifalamclaude-max.github.io/simulator/guide/> — user guide with screenshots, the physics and control equations, and all 2708 parameters.
+**Documentation:** <https://jarifalam13.github.io/DUBURI_SIM/guide/> — user guide with screenshots, the physics and control equations, and all 2708 parameters.
 
 **Or offline:** download `dist/duburi-sim.html` and double-click it. Nothing to install.
 
