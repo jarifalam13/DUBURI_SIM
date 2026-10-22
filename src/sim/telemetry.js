@@ -15,6 +15,11 @@ export const CHANNELS = [
   ['saturated', ''], ['submerged', ''], ['gain', ''],
   ['thrust_total', 'N'],
   ['press_abs', 'mbar'], ['press_int', 'mbar'], ['flood', 'mL'], ['floor_dist', 'm'],
+  // state estimate, battery monitor, rangefinder, temperatures, failsafe flags (contract §6)
+  ['depth_est', 'm'], ['climb_est', 'm/s'],
+  ['batt_v', 'V'], ['batt_a', 'A'], ['batt_mah', 'mAh'], ['batt_pct', '%'],
+  ['rf_dist', 'm'], ['rf_ok', ''], ['temp_int', '°C'], ['temp_water', '°C'], ['compass_hdg', 'deg'], ['turns', 'rev'],
+  ['fs_pilot', ''], ['fs_gcs', ''], ['fs_ekf', ''], ['fs_leak', ''], ['fs_press', ''], ['fs_temp', ''], ['fs_crash', ''], ['fs_terrain', ''], ['fs_sensor', ''], ['fs_batt', ''], ['gcs_link', ''],
 ];
 export const MAX_MOTORS = 12;
 for (let i = 0; i < MAX_MOTORS; i++) CHANNELS.push([`m${i + 1}_out`, ''], [`m${i + 1}_pwm`, 'us'], [`m${i + 1}_N`, 'N']);

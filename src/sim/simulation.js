@@ -10,7 +10,7 @@ import { thrusterLimits } from '../vehicle/config.js';
 import { analyzeLayout } from '../alloc/allocation.js';
 import { FRAMES, frameTable } from '../alloc/frames.js';
 import { SensorSuite } from '../ardusub/sensors.js';
-import { ArduSubSim, MODE } from '../ardusub/sub.js';
+import { ArduSubSim, MODE, MODE_INFO } from '../ardusub/sub.js';
 import { Telemetry } from './telemetry.js';
 
 export function buildMixer(cfg, geo) {
@@ -46,44 +46,57 @@ export class Simulation {
     this.pilot = { x: 0, y: 0, z: 500, r: 0, s: 0, t: 0, buttons: 0 };
     this.buttonLatch = 0;
     this.nextSend = 0;
+    // simulated ground station link: QGC heartbeat (1 Hz) and MANUAL_CONTROL (joystick sendRate)
+    this.gcsLinkDown = false;
+    this.joystickConnected = true;
     this.listeners = new Set();
     this.rebuild(cfg, geo, { keepState: false });
   }
 
+  // every parameter the vehicle has (simulated + kept), so the firmware sees the file's values
+  allParams(cfg = this.cfg) { return { ...(cfg.extraParams || {}), ...cfg.params }; }
+  sensorConfig(cfg = this.cfg) { return { ...(cfg.sensors || {}), leakProbeFitted: !!cfg.hull?.leakSensor }; }
+
+  // keepState: the firmware, sensors and vehicle state survive (a live edit, not a reboot)
   rebuild(cfg = this.cfg, geo = this.geo, { keepState = true } = {}) {
-    const prev = keepState && this.plant ? { y: Float64Array.from(this.plant.y), armed: this.fw?.armed, mode: this.fw?.mode, time: this.time, thrusters: this.plant.thrusters.map((t) => t.T), flood: { ...this.plant.flood } } : null;
+    const keep = keepState && this.plant && this.fw;
+    const prev = keep ? { y: Float64Array.from(this.plant.y), thrusters: this.plant.thrusters.map((t) => t.T), flood: { ...this.plant.flood }, battery: this.plant.battery?.snapshot?.(), env: { time: this.env.time, gust: this.env.gust?.slice(), gm: this.env.gm?.map((g) => g.x) } } : null;
     this.cfg = cfg;
     this.geo = geo;
-    this.rng = new RNG(cfg.sim?.seed ?? 1);
+    if (!keep) this.rng = new RNG(cfg.sim?.seed ?? 1);
     this.env = new Environment(cfg.environment, this.rng);
+    if (prev) {
+      this.env.time = prev.env.time;
+      if (prev.env.gust) this.env.gust = prev.env.gust;
+      prev.env.gm?.forEach((x, i) => { if (this.env.gm?.[i]) this.env.gm[i].x = x; });
+    }
     const { plant, info } = buildPlantModel(cfg, geo, this.env);
     this.model = plant;
     this.info = info;
     this.mixer = buildMixer(cfg, geo);
     this.plant = new VehiclePlant(plant, this.env);
-    this.sensors = new SensorSuite(this.rng);
     const loopHz = Math.min(1000, Math.max(50, cfg.params.SCHED_LOOP_RATE || 400));
     this.loopHz = loopHz;
-    this.sensors.configure(cfg.sensors, cfg.params, loopHz, this.env);
-    this.fw = new ArduSubSim({ params: cfg.params, mixer: this.mixer, sensors: this.sensors });
     this.substeps = Math.max(1, Math.round((cfg.sim?.physicsRate ?? 800) / loopHz));
     this.dtFw = 1 / loopHz;
     this.dtPhys = this.dtFw / this.substeps;
     this.recordEvery = Math.max(1, Math.round(loopHz / 50));
-    this.loopCount = 0;
     if (prev) {
       this.plant.y.set(prev.y);
       this.plant.thrusters.forEach((t, i) => (t.T = prev.thrusters[i] ?? 0));
       if (prev.flood) this.plant.flood = { ...prev.flood };
+      if (prev.battery) this.plant.battery?.restore?.(prev.battery);
       // the pool may have shrunk around the vehicle
       const inside = this.keepInPool(this.plant.position);
       if (inside.moved) { this.plant.y[0] = inside.p[0]; this.plant.y[1] = inside.p[1]; this.plant.y[2] = inside.p[2]; for (let i = 7; i < 13; i++) this.plant.y[i] = 0; }
-      this.time = prev.time;
-      this.fw.time = prev.time;
-      this.sensors.update(this.plant, this.dtFw);
-      if (prev.mode !== undefined) this.fw.setMode(prev.mode, 'restore');
-      if (prev.armed) this.fw.arm('restore');
+      // same sensors and firmware: parameters and hardware applied in place (contract §5)
+      this.sensors.configure(this.sensorConfig(cfg), this.allParams(cfg), loopHz, this.env);
+      this.fw.rebind({ sensors: this.sensors, mixer: this.mixer, params: this.allParams(cfg) });
+      this.fw.plantRef = this.plant;
     } else {
+      this.sensors = new SensorSuite(this.rng);
+      this.sensors.configure(this.sensorConfig(cfg), this.allParams(cfg), loopHz, this.env);
+      this.fw = null;
       this.reset();
     }
     this.emit('rebuild');
@@ -99,17 +112,31 @@ export class Simulation {
     return { p, moved };
   }
 
+  // Reboot at the start pose. Reproducible: the RNG is reseeded and the
+  // environment clock and turbulence restart, so a reset run equals a fresh one.
   reset(pose) {
     const s = this.cfg.start || {};
+    this.rng.seed(this.cfg.sim?.seed ?? 1);
+    const env = this.env;
+    if (env.reset) env.reset();
+    else {
+      env.time = 0;
+      for (const k of ['gust', 'gustRaw', 'gustAccel']) if (Array.isArray(env[k])) env[k] = [0, 0, 0];
+      env.gm?.forEach((g) => { g.x = 0; });
+    }
     const p = this.keepInPool(pose?.position ?? s.position ?? [0, 0, 1]).p;
     const yaw = (pose?.yaw ?? s.yaw ?? 0) * DEG;
     this.plant.reset({ position: p.slice(), quaternion: qFromEuler(0, 0, yaw) });
     this.sensors.reset();
     this.sensors.update(this.plant, this.dtFw);
-    this.fw = new ArduSubSim({ params: this.cfg.params, mixer: this.mixer, sensors: this.sensors });
+    const was = this.fw;
+    this.fw = new ArduSubSim({ params: this.allParams(), mixer: this.mixer, sensors: this.sensors });
+    this.fw.plantRef = this.plant;
+    if (was?.gcsLinkDown) this.fw.gcsLinkDown = true;
     this.time = 0;
     this.acc = 0;
     this.nextSend = 0;
+    this.buttonLatch = 0;
     this.loopCount = 0;
     this.telemetry.clear();
     this.emit('reset');
@@ -122,16 +149,23 @@ export class Simulation {
     Object.assign(this.pilot, msg);
     this.buttonLatch |= msg.buttons >>> 0;
   }
+  // GCS link up/down (heartbeats and MANUAL_CONTROL stop) and joystick connected/disconnected
+  setGcsLink(ok) { this.gcsLinkDown = !ok; if (this.fw) this.fw.gcsLinkDown = !ok; }
+  setJoystickConnected(ok) { this.joystickConnected = !!ok; }
+  get gcsLinkUp() { return !(this.gcsLinkDown || this.fw?.gcsLinkDown); }
 
-  // one firmware loop + physics sub-steps
+  // one firmware loop + physics sub-steps. The GCS messages are delivered on
+  // integer loop counts (no drift) and handled by the firmware's GCS task.
   loop() {
     const fw = this.fw;
-    if (this.time >= this.nextSend) {
-      const sendRate = this.cfg.joystick?.sendRate ?? 50;
-      this.nextSend = this.time + 1 / sendRate;
-      if (!this.opts.noPilot) fw.handleManualControl({ ...this.pilot, buttons: this.pilot.buttons | this.buttonLatch });
+    const P = fw.params, sysid = this.cfg.gcs?.sysid ?? 255, target = P.SYSID_THISMAV ?? 1;
+    const link = this.gcsLinkUp;
+    const sendEvery = Math.max(1, Math.round(this.loopHz / Math.max(1, this.cfg.joystick?.sendRate ?? 50)));
+    if (this.loopCount % sendEvery === 0) {
+      if (link && !this.opts.noPilot && this.joystickConnected) fw.receive({ type: 'MANUAL_CONTROL', ...this.pilot, buttons: this.pilot.buttons | this.buttonLatch, sysid, target });
       this.buttonLatch = 0;
     }
+    if (link && this.loopCount % this.loopHz === 0) fw.receive({ type: 'HEARTBEAT', sysid });
     this.sensors.update(this.plant, this.dtFw);
     const pwm = fw.fastLoop(this.dtFw);
     for (let k = 0; k < this.substeps; k++) {
@@ -165,7 +199,7 @@ export class Simulation {
     const st = fw.status();
     // targets only exist while a controller is active (NaN breaks the graph line)
     const attOn = fw.armed && fw.mode !== MODE.MANUAL;
-    const depthOn = fw.armed && (fw.mode === MODE.ALT_HOLD || fw.mode === MODE.POSHOLD || fw.mode === MODE.SURFACE);
+    const depthOn = fw.armed && !MODE_INFO[fw.mode]?.manualThrottle && fw.mode !== MODE.MOTOR_DETECT;
     const rec = {
       t: this.time, armed: fw.armed ? 1 : 0, mode: fw.mode,
       roll: e[0] * RAD, pitch: e[1] * RAD, yaw: e[2] * RAD,
@@ -184,6 +218,14 @@ export class Simulation {
       press_abs: s.pressureMeas / 100, press_int: s.internalPressure / 100, flood: p.flood.volume * 1e6,
       floor_dist: this.env.floorDepth(p.position[0]) - p.position[2],
       thrust_total: p.thrusters.reduce((a, t) => a + Math.abs(t.Teff), 0),
+      depth_est: -s.positionZUpCm / 100, climb_est: s.velocityZUpCms / 100,
+      batt_v: s.battery?.healthy ? s.battery.voltage : p.battery?.voltage ?? NaN, batt_a: s.battery?.healthy ? s.battery.current : p.battery?.current ?? NaN,
+      batt_mah: s.battery?.healthy ? s.battery.consumedMah : p.battery?.consumedMah ?? NaN, batt_pct: s.battery?.healthy ? s.battery.remainingPct : p.battery?.remainingPct ?? NaN,
+      rf_dist: s.rangefinder?.enabled ? s.rangefinder.distance_m : NaN, rf_ok: s.rangefinder?.healthy ? 1 : 0,
+      temp_int: s.internalTempC, temp_water: s.waterTempC, compass_hdg: s.compass?.healthy ? s.compass.headingDeg : NaN, turns: fw.quarterTurnCount / 4,
+      fs_pilot: fw.failsafe.pilotInput ? 1 : 0, fs_gcs: fw.failsafe.gcs ? 1 : 0, fs_ekf: fw.failsafe.ekf ? 1 : 0, fs_leak: fw.failsafe.leak ? 1 : 0,
+      fs_press: fw.failsafe.internalPressure ? 1 : 0, fs_temp: fw.failsafe.internalTemp ? 1 : 0, fs_crash: fw.failsafe.crash ? 1 : 0,
+      fs_terrain: fw.failsafe.terrain ? 1 : 0, fs_sensor: fw.failsafe.sensorHealth ? 1 : 0, fs_batt: fw.battFs.state, gcs_link: this.gcsLinkUp ? 1 : 0,
     };
     for (let i = 0; i < p.thrusters.length && i < 12; i++) {
       rec[`m${i + 1}_out`] = st.motorsOut[i] ?? 0;
