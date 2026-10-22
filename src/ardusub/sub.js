@@ -215,6 +215,16 @@ export class ArduSubSim {
     if (this.checkEnabled(ARMING_CHECK.MISSION) && (this.params.ARMING_MIS_ITEMS ?? 0) !== 0 && this.mission.items.length === 0) { this.checkFailed(report, 'No mission'); ok = false; }
     return ok;
   }
+  // list of the pre-arm failures (HUD); preArm() kept for older callers (null = ok)
+  armingCheckFailures() {
+    const keep = this.messages.length, was = this.runningArmingChecks;
+    this.runningArmingChecks = false;
+    this.preArmChecks(true);
+    this.runningArmingChecks = was;
+    const out = this.messages.splice(keep).map((m) => m.text.replace(/^(PreArm|Arm): /, ''));
+    return this.armed ? [] : out;
+  }
+  preArm() { const f = this.armingCheckFailures(); return f.length ? f[0] : null; }
   batteryArmingCheck() {
     const b = this.sensors.battery, P = this.params;
     if (!b?.present) return '';
@@ -378,6 +388,9 @@ export class ArduSubSim {
   pilotSpeedDn() { const P = this.params; return (P.PILOT_SPEED_DN ?? 0) === 0 ? Math.abs(P.PILOT_SPEED_UP ?? 100) : Math.abs(P.PILOT_SPEED_DN); }
 
   // ---------------- MAVLink / GCS ----------------
+  // UI GCS-link toggle: while down the simulated GCS sends nothing (heartbeat and MANUAL_CONTROL lost)
+  setGcsLink(ok) { this.gcsLinkDown = !ok; }
+  get missionIndex() { return this.mission.index; }
   // queue a message as the GCS link delivers it; handled in GCS::update_receive
   receive(msg) { this.inbox.push(msg); }
   gcsUpdateReceive() {
