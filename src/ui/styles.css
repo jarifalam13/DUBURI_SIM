@@ -273,3 +273,29 @@ details.more summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs
 .detect-what .note { font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btn.small { height: 26px; padding: 0 10px; font-size: var(--fs-xs); }
 @media (max-width: 760px) { .detect-notice { left: 16px; right: 16px; width: auto; max-height: 55vh; } }
+
+/* ==== Parameters panel (PARAMS agent; src/ui/panels/params.js) ==== */
+.prm-list { display: flex; flex-direction: column; gap: 6px; }
+.prm-group { border: 1px solid var(--line); border-radius: 8px; }
+.prm-group > summary { cursor: pointer; padding: 6px 10px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: var(--fs-sm); }
+.prm-group[open] > summary { border-bottom: 1px solid var(--line); }
+.prm-group-body { display: flex; flex-direction: column; }
+.prm-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.prm-list > .prm-row { border: 1px solid var(--line); border-radius: 8px; }
+.prm-group-body .prm-row:last-child { border-bottom: 0; }
+.prm-row.mod .prm-name { color: var(--foam); }
+.prm-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.prm-name { font-weight: 600; }
+.prm-title { color: var(--ink-2); font-size: var(--fs-sm); flex: 1 1 auto; min-width: 0; }
+.prm-pills { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.prm-body { display: flex; flex-direction: column; gap: 3px; }
+.prm-value { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.prm-value select { max-width: 100%; height: 28px; }
+.prm-num { width: 13ch; height: 28px; }
+.prm-desc, .prm-meta, .prm-msg { font-size: var(--fs-xs); max-width: none; }
+.prm-meta { color: var(--ink-3); }
+.prm-msg:empty { display: none; }
+.prm-edit-bits { display: flex; flex-direction: column; gap: 4px; }
+.prm-bits summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-xs); }
+.prm-bits .row.check { gap: 6px; }
+/* ==== end Parameters panel ==== */

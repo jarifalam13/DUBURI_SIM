@@ -12,7 +12,7 @@ import { runCfdStudy, cfdAbort, cfdStatus, cfdUsesGPU, estimateCfdMinutes, cfdSt
 import { slug } from './params.js';
 
 const PRECISION = {
-  max: { label: 'Maximum', bem: [1800, 3600, 7200], cfd: 'fine', gci: true, note: 'Finest grids, three-level convergence for both the panel method and the CFD.' },
+  max: { label: 'Maximum', bem: [1800, 3600, 7200], cfd: 'fine', gci: true, both: true, note: 'Finest grids, three-level convergence for both the panel method and the CFD, tows in both directions (so the couplings between axes are measured).' },
   high: { label: 'High', bem: [900, 1800, 3600], cfd: 'standard', gci: true, note: 'Standard CFD grid with convergence study: about a quarter of the time of Maximum.' },
   fast: { label: 'Fast', bem: [1800], cfd: 'quick', gci: false, note: 'One grid each: a first look in a few minutes, no uncertainty estimate.' },
   test: { label: 'Test', bem: [400], cfd: 'test', gci: false, note: 'Smoke test only.', hidden: true },
@@ -56,7 +56,7 @@ async function runPipeline(app) {
     // 3 damping
     st('cfd', { status: 'running', text: 'Starting the tow tank' });
     const quality = cfdUsesGPU() || P.cfd === 'test' ? P.cfd : 'quick';
-    const study = await runCfdStudy(app, { quality, gci: P.gci, extrapolate: true, both: false, dofs: DOFS.map((d) => d.key) });
+    const study = await runCfdStudy(app, { quality, gci: P.gci, extrapolate: true, both: !!P.both, dofs: DOFS.map((d) => d.key) });
     if (AT.cancelled) throw new Error('cancelled');
     st('cfd', { status: 'done', progress: 1, text: `${study.meta.runs.length} runs in ${fmt(study.meta.seconds / 60, 1)} min` });
     // 4 controllers on the new hydrodynamics
@@ -66,7 +66,9 @@ async function runPipeline(app) {
       damping: { ...cfg.hydro.damping, mode: 'cfd', DL: study.DL, DQ: study.DQ, ref: study.ref, meta: study.meta },
     };
     const cfgT = JSON.parse(JSON.stringify({ ...cfg, hydro: { ...cfg.hydro, ...hydro } }));
-    const tune = await app.jobs.run('autotune', { cfg: cfgT, geo: app.geo, opts: { axes: ['roll', 'pitch', 'yaw', 'depth'], quick: false } }, (f, t) => st('tune', { progress: f, text: t || '' }));
+    // suggestions only: nothing is written to the vehicle until "Apply selected"
+    const axes = ['roll', 'pitch', 'yaw', 'depth', ...(cfg.sensors?.positioning ? ['poshold'] : [])];
+    const tune = await app.jobs.run('autotune', { cfg: cfgT, geo: app.geo, opts: { axes, quick: false } }, (f, t) => st('tune', { progress: f, text: t || '' }));
     st('tune', { status: 'done', progress: 1, text: 'Done' });
     AT.result = { inputs, bem, study, tune, hydro, before: { addedMass: app.sim.info.MA.map((r, i) => r[i]), damping: app.sim.info.DQ.map((r, i) => r[i]), dSource: app.sim.info.dSource, maSource: app.sim.info.maSource }, precision: AT.precision, quality };
     // editable suggestions (axes that keep their gains start unticked)
@@ -112,7 +114,8 @@ function exportReport(app) {
     addedMass: { matrix: R.bem.M, panels: R.bem.levels, uncertainty: R.bem.uncertainty, reference: 'vehicle origin' },
     damping: { DL: R.study.DL, DQ: R.study.DQ, reference: 'centre of gravity', uncertainty: R.study.meta.uncertainty, runs: R.study.meta.runs },
     gains: Object.fromEntries(Object.keys(AT.edits).map((k) => [k, { current: app.cfg.params[k], tuned: AT.edits[k], use: !!AT.include[k] }])),
-    stepTests: Object.fromEntries(Object.entries(R.tune.report).filter(([, r]) => !r.skipped).map(([a, r]) => [a, { before: r.before, after: r.after, kept: !!r.keep }])),
+    stepTests: Object.fromEntries(Object.entries(R.tune.report).filter(([, r]) => !r.skipped).map(([a, r]) => [a, { before: r.before, after: r.after, kept: !!r.keep, method: r.method, atBound: r.atBound, notes: r.notes }])),
+    tuneNotes: R.tune.notes, cfdWarnings: R.study.warnings,
   };
   saveFile(`${slug(app.cfg.name)}-autotune.json`, JSON.stringify(doc, null, 1), 'application/json');
 }
@@ -128,11 +131,11 @@ export default {
     const P = PRECISION[AT.precision];
     const gpu = cfdUsesGPU();
     const quality = gpu ? P.cfd : 'quick';
-    const est = app.geo ? estimateCfdMinutes(app, quality, P.gci) : [0, 0];
+    const est = app.geo ? estimateCfdMinutes(app, quality, P.gci, true, !!P.both) : [0, 0];
     const bemMin = P.bem.reduce((a, n) => a + (n / 3600) ** 2 * 0.25, 0); // minutes, rough (WebAssembly)
     el.append(h('div', { class: 'card' },
       h('b', {}, `Design: ${cfg.model.fileName || 'sample ROV'}`),
-      h('p', { class: 'note' }, 'AUTO-TUNE computes this design\'s added mass with the panel method and its drag and damping in the CFD lab, each on several resolutions with Richardson extrapolation and an uncertainty, then tunes roll, pitch, yaw and depth hold on that model with closed-loop step tests. You see every value before anything is applied, and you can change them.')));
+      h('p', { class: 'note' }, 'AUTO-TUNE computes this design\'s added mass with the panel method and its drag and damping in the CFD lab, each on several resolutions with Richardson extrapolation and an uncertainty, then tunes the controllers on that model the way ArduPilot\'s AutoTune does: rate-loop twitches (D up until bounce-back, then P up until overshoot), angle P and acceleration limits from angle twitches, then input shaping, depth hold and position hold on top, all inside the ArduSub parameter ranges, and a final check of every axis with the complete set. You see every value before anything is applied, and you can change them.')));
 
     // inputs check
     el.append(h('div', { class: 'section' }, h('h3', {}, 'Your inputs'),
@@ -204,6 +207,8 @@ function report(app, draws) {
     const label = STEP_AXES[axis]?.label ?? axis;
     if (rep.skipped) { rows.push(h('tr', {}, h('td', { colspan: 4, class: 'note' }, `${label}: ${rep.skipped}`))); continue; }
     rows.push(h('tr', {}, h('td', { colspan: 4, style: { color: 'var(--ink-3)', fontSize: '0.72rem', letterSpacing: '0.08em', textTransform: 'uppercase' } }, `${label}${rep.keep ? ' · current gains already best' : ` · score ${fmt(rep.beforeCost, 2)} → ${fmt(rep.afterCost, 2)}`}`)));
+    for (const n of rep.notes || []) rows.push(h('tr', {}, h('td', { colspan: 4, class: 'note' }, n)));
+    if (rep.atBound?.length) rows.push(h('tr', {}, h('td', { colspan: 4, class: 'note warn' }, `At the edge of the ArduSub range: ${rep.atBound.join(', ')}. The best value may lie beyond it; check this axis in the pool.`)));
     for (const k of Object.keys(rep.suggested || rep.params || {})) {
       const inp = h('input', { type: 'number', step: 'any', value: String(AT.edits[k]), 'aria-label': `${k} tuned value`, style: { width: '10ch' }, onchange: () => { const v = parseFloat(inp.value); if (Number.isFinite(v)) { AT.edits[k] = v; inp.classList.remove('invalid'); } else inp.classList.add('invalid'); } });
       const cb = h('input', { type: 'checkbox', 'aria-label': `Use ${k}`, onchange: () => { AT.include[k] = cb.checked; } });
@@ -211,6 +216,7 @@ function report(app, draws) {
       rows.push(h('tr', {}, h('td', { class: 'mono' }, k), h('td', { class: 'num note' }, fmt(cfg.params[k], 4)), h('td', {}, inp), h('td', {}, cb)));
     }
   }
+  for (const n of R.tune.notes || []) rows.push(h('tr', {}, h('td', { colspan: 4, class: 'note' }, n)));
   wrap.append(h('div', { class: 'section' }, h('b', {}, 'ArduSub gains'),
     h('div', { class: 'table-wrap' }, h('table', { class: 'data' }, h('thead', {}, h('tr', {}, h('th', {}, 'Parameter'), h('th', { class: 'num' }, 'Now'), h('th', {}, 'Tuned (edit)'), h('th', {}, 'Use'))), h('tbody', {}, rows))),
     h('p', { class: 'note' }, 'Change any tuned value before applying; untick a row to keep the current value. Every value stays editable later in Parameters and Tuning, and exports to your Pixhawk with Save .param.')));

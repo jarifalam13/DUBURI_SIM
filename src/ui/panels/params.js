@@ -125,7 +125,6 @@ export default {
 
     function rowFor(p) {
       const row = h('div', { class: `prm-row${isMod(p.name) ? ' mod' : ''}` });
-      const r = paramRange(p.name) || {};
       const meta = [];
       if (p.units) meta.push(p.units);
       if (p.min !== undefined || p.max !== undefined) meta.push(`range ${p.min ?? '…'} – ${p.max ?? '…'}`);
@@ -148,7 +147,6 @@ export default {
           h('div', { class: 'note prm-desc' }, p.desc || '', p.note ? h('div', { class: 'note warn' }, p.note) : null),
           h('div', { class: 'note prm-meta' }, meta.join(' · ')),
           h('div', { class: `prm-msg note ${cross ? 'warn' : ''}` }, cross || '')));
-      void r;
       return row;
     }
 

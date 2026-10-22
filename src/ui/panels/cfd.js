@@ -155,13 +155,13 @@ async function runStudy(app) {
       const snapshot = jb.N === grids[0] && jb.Re === Res[Res.length - 1] && jb.sign === 1;
       const res = await runOne(app, cs, jb.Re, ac.signal, onProg, snapshot);
       if (res.field) S.flows[jb.dof] = { field: res.field, cs: { R: cs.R, origin: cs.origin, cell: cs.cell, kind: cs.kind, axis: cs.axis, sign: cs.sign, N: cs.N }, V: st.V, cg, Re: jb.Re };
-      S.results.push({ ...jb, C: res.C, converged: res.converged, rel: res.rel, steps: res.steps, seconds: res.seconds, mlups: res.mlups,
+      S.results.push({ ...jb, C: res.C, converged: res.converged, rel: res.rel, steps: res.steps, seconds: res.seconds, mlups: res.mlups, nuT: res.nuT ?? null,
         lattice: [cs.nx, cs.ny, cs.nz], blockage: cs.blockage, wall: cs.wall, links: cs.linkStats });
     }
     const rho = app.sim.env.rho, nu = kinematicViscosity(cfg.environment.temperature, cfg.environment.salinity);
     const est = dragFromProjections(app.geo.projections, rho, cfg.hydro.damping.Cd ?? 1);
     const out = assemble(S.results, { rho, nu, ellRef, linearExtra: S.addLinear ? est.linear : [0, 0, 0, 0, 0, 0] });
-    S.study = { ...out, ref: cg, estimate: est, meta: { date: new Date().toISOString(), quality: S.quality, N, grids, Re: Res, both: S.both, backend: gpu ? 'gpu' : 'cpu', seconds: (performance.now() - S.startedAt) / 1000, ellRef, dofs: dofKeys, linearFromEstimate: S.addLinear, wall: 'interpolated (Bouzidi)', uncertainty: Object.fromEntries(Object.entries(out.details).map(([k, d]) => [k, d.uncertainty])), runs: S.results.map((r) => ({ dof: r.dof, sign: r.sign, Re: r.Re, N: r.N, converged: r.converged, steps: r.steps, lattice: r.lattice })) } };
+    S.study = { ...out, ref: cg, estimate: est, meta: { date: new Date().toISOString(), quality: S.quality, N, grids, Re: Res, both: S.both, backend: gpu ? 'gpu' : 'cpu', seconds: (performance.now() - S.startedAt) / 1000, ellRef, dofs: dofKeys, linearFromEstimate: S.addLinear, wall: 'interpolated (Bouzidi)', uncertainty: Object.fromEntries(Object.entries(out.details).map(([k, d]) => [k, d.uncertainty])), approximations: Object.fromEntries(Object.entries(out.details).filter(([, d]) => d.approximation).map(([k, d]) => [k, d.approximation])), couplings: S.both ? 'both tow directions' : 'not measured (one tow direction)', warnings: out.warnings, runs: S.results.map((r) => ({ dof: r.dof, sign: r.sign, Re: r.Re, N: r.N, converged: r.converged, steps: r.steps, lattice: r.lattice, nuT: r.nuT })) } };
     S.status = `Finished in ${fmt(S.study.meta.seconds / 60, 1)} min`;
     toast('CFD study finished: review and apply the damping', 'good', 6000);
   } catch (e) {
@@ -222,9 +222,9 @@ export function cfdAbort() { S.abort?.abort(); S.cancelCPU?.(); }
 export const cfdState = () => S;
 export function cfdStatus() { return { status: S.status, progress: S.progress, current: S.current, mlups: S.mlups, running: S.running }; }
 export function cfdUsesGPU() { return useGPU(); }
-export function estimateCfdMinutes(app, quality, gci, extrapolate = true) {
+export function estimateCfdMinutes(app, quality, gci, extrapolate = true, both = false) {
   const keys = DOFS.map((d) => d.key);
-  const { total } = planWork(app, QUALITY[quality].N, keys, extrapolate ? RE_PAIR : RE_SINGLE, [1], gci);
+  const { total } = planWork(app, QUALITY[quality].N, keys, extrapolate ? RE_PAIR : RE_SINGLE, both ? [1, -1] : [1], gci);
   const rate = S.mlups ? [S.mlups * 0.8, S.mlups * 1.2] : useGPU() ? [60, 400] : [3, 20];
   return [total / rate[1] / 1e6 / 60, total / rate[0] / 1e6 / 60];
 }
@@ -270,7 +270,7 @@ export default {
       h('div', { class: 'row' }, DOFS.map((d) => checkbox(d.label, () => S.dofs[d.key], (v) => { S.dofs[d.key] = v; app.refreshPanel(); }))),
       checkbox(`Grid convergence: ${gridLevels(N, true).join(', ')} cells, Richardson extrapolation and an uncertainty (GCI) for every result (about +35% time)`, () => S.gci, (v) => { S.gci = v; app.refreshPanel(); }),
       checkbox(`Reynolds extrapolation (runs at Re ${RE_PAIR.join(' and ')}, extrapolated to your vehicle)`, () => S.extrapolate, (v) => { S.extrapolate = v; app.refreshPanel(); }),
-      checkbox('Tow both directions (for front/back asymmetric hulls, twice the time)', () => S.both, (v) => { S.both = v; app.refreshPanel(); }),
+      checkbox('Tow both directions (needed for the couplings between axes and for front/back asymmetric hulls, twice the time)', () => S.both, (v) => { S.both = v; app.refreshPanel(); }),
       checkbox('Keep a small low-speed linear damping from the estimate', () => S.addLinear, (v) => { S.addLinear = v; }),
       h('p', { class: 'note' }, est),
       h('div', { class: 'row' },
@@ -366,7 +366,7 @@ function results(app, R) {
     const det = R.details[d.key] || {};
     const Cd = j < 3 && proj.area[j] > 0 ? q / (0.5 * rho * proj.area[j]) : NaN;
     const u = det.uncertainty;
-    return h('tr', {}, h('td', {}, d.label), h('td', { class: 'num' }, sig(est.quadratic[j])), h('td', { class: 'num' }, h('b', {}, sig(q))),
+    return h('tr', {}, h('td', {}, d.label, det.approximation ? h('span', { class: 'note', title: det.approximation }, ' (approx.)') : null), h('td', { class: 'num' }, sig(est.quadratic[j])), h('td', { class: 'num' }, h('b', {}, sig(q))),
       h('td', { class: 'num' }, Number.isFinite(u) ? `± ${fmt(u * 100, 1)}%` : '—'),
       h('td', { class: 'num' }, Number.isFinite(Cd) ? fmt(Cd, 2) : '—'));
   });
@@ -392,10 +392,13 @@ function results(app, R) {
       h('thead', {}, h('tr', {}, h('th', {}, 'Motion'), h('th', { class: 'num' }, 'Estimate'), h('th', { class: 'num' }, 'CFD'), h('th', { class: 'num' }, 'Grid unc.'), h('th', { class: 'num' }, 'Cd'))),
       h('tbody', {}, rows))),
     h('p', { class: 'note' }, `Quadratic damping (N·s²/m² for tows, N·m·s² for spins). Cd is based on the projected area of your hull. Current model: ${info.dSource}.${notConverged ? ` ${notConverged} run(s) had an unsteady wake; their forces are time averages.` : ''}`),
+    R.meta.dofs.some((k) => DOFS.find((d) => d.key === k).kind === 'r') ? h('p', { class: 'note' }, 'Spin damping (marked approx.) is computed on a hull that does not actually turn: its walls move but the geometry stays put, so the wake is that of a quasi-steady spin. Exact for bodies of revolution; for other hulls its uncertainty includes a 30% model term.') : null,
+    ...(R.warnings || []).map((w) => h('p', { class: 'note warn' }, w)),
     h('div', { class: 'table-wrap' }, h('table', { class: 'data' },
       h('thead', {}, h('tr', {}, h('th', {}, 'Drag at'), ...speeds.map((v, k) => h('th', { class: 'num' }, `${v} m/s · ${rates[k]} rad/s`)))),
       h('tbody', {}, dragRows))),
-    couplings.length ? h('div', { class: 'card' }, h('b', {}, 'Couplings found'), ...couplings.slice(0, 5).map((c) => h('p', { class: 'note' }, `${AXL[c.j]} motion also produces ${AXL[c.i].toLowerCase()} ${c.i < 3 ? 'force' : 'moment'}: ${sig(-c.v)} ${c.i < 3 ? 'N' : 'N·m'} per (${c.j < 3 ? 'm/s' : 'rad/s'})².`))) : h('p', { class: 'note' }, 'No significant coupling between the axes.'),
+    couplings.length ? h('div', { class: 'card' }, h('b', {}, 'Couplings found'), ...couplings.slice(0, 5).map((c) => h('p', { class: 'note' }, `${AXL[c.j]} motion also produces ${AXL[c.i].toLowerCase()} ${c.i < 3 ? 'force' : 'moment'}: ${sig(-c.v)} ${c.i < 3 ? 'N' : 'N·m'} per (${c.j < 3 ? 'm/s' : 'rad/s'})².`)))
+      : h('p', { class: 'note' }, R.meta.both ? 'No significant coupling between the axes.' : 'Couplings between the axes were not measured: a force that does not reverse with the motion (lift) cannot be told from drag with one tow direction. Tick "Tow both directions" to get them.'),
     h('div', { class: 'row' },
       h('button', { class: 'btn primary', onclick: () => {
         cfg.hydro.damping = { ...cfg.hydro.damping, mode: 'cfd', DL: R.DL, DQ: R.DQ, ref: R.ref, meta: R.meta };
