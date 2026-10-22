@@ -130,6 +130,7 @@ h2:hover .anchor, h3:hover .anchor { opacity: 1; }
 
 /* ---------- hero ---------- */
 .hero { display: grid; gap: 1.1rem; padding-bottom: 1.6rem; border-bottom: 1px solid var(--line); }
+.hero-logo { width: min(320px, 70%); height: auto; border-radius: 10px; background: #fff; padding: 6px 10px; }
 .hero h1 { font-size: var(--fs-xxl); font-weight: 700; letter-spacing: 0.01em; }
 .hero h1 em { font-style: normal; color: var(--foam); }
 .facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
@@ -339,7 +340,8 @@ details > div { padding: 0 14px 14px; display: grid; gap: 0.55rem; color: var(--
 <!-- ============================== OVERVIEW ============================== -->
 <section class="doc" id="overview">
   <div class="hero">
-    <span class="eyebrow">DUBURI ROV simulator · ArduSub 4.5.7</span>
+    <img class="hero-logo" src="logo.jpg" alt="BRACU DUBURI">
+    <span class="eyebrow">BRACU DUBURI ROV simulator · ArduSub 4.5.7</span>
     <h1>Fly the robot <em>before</em> it gets wet.</h1>
     <p class="lead">DUBURI is a virtual pool that runs in the browser. Give it your ROV's 3D design and your Pixhawk parameter file, and it flies the vehicle with a line-by-line port of the ArduSub 4.5.7 controllers on top of a Fossen 6-DOF hydrodynamic model.</p>
     <div class="facts" role="list">
