@@ -7,6 +7,8 @@ before the first pool session. Everything runs in one HTML file in the browser.
 
 **Open it online:** <https://jarifalamclaude-max.github.io/simulator/> (Chrome or Edge recommended; needs WebGL2).
 
+**Documentation:** <https://jarifalamclaude-max.github.io/simulator/guide/> — user guide with screenshots, the physics and control equations, and all 2708 parameters.
+
 **Or offline:** download `dist/duburi-sim.html` and double-click it. Nothing to install.
 
 ## What it does
